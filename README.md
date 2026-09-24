@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Iteration 0 scope and lifecycle proposals are approved. I1 is building the application foundation on its feature branch: React and NestJS workspaces, a local PostgreSQL database, a first migration, health endpoints, OpenAPI, and CI. Checkout, payment processing, AWS resources, and Terraform deployment belong to later iterations. The approved [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [remaining open decisions](docs/open-decisions.md) define the baseline.
+Iteration 0 scope and lifecycle proposals are approved. I1's React/NestJS workspaces, local PostgreSQL workflow, initial migration, health endpoints, OpenAPI, and CI are implemented in [PR #3](https://github.com/teraspace/payment-flow-lab/pull/3); its local and hosted gates pass, and user validation is pending before merge. Checkout, payment processing, AWS resources, and Terraform deployment belong to later iterations. The approved [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [remaining open decisions](docs/open-decisions.md) define the baseline.
 
 ## Engineering rules
 
