@@ -10,7 +10,7 @@ This is a resource and behavior contract for review, not generated OpenAPI and n
 | `Checkout` / `CheckoutItem` | Customer/delivery snapshot, immutable price/fee snapshot, and checkout state. | The accepted total is computed and stored by the API; never recompute historical attempts using a later catalog price. |
 | `Reservation` | Quantity held for a checkout. | One active hold per checkout/item; `HELD` transitions once to `COMMITTED` or `RELEASED`. |
 | `IdempotencyRecord` | Scope, key, canonical request fingerprint, resource ID, and stable result reference. | Unique `(scope, operation, key)`; same fingerprint replays the resource; different fingerprint returns `409 Conflict`. |
-| `PaymentAttempt` | Local attempt state, provider reference/ID, amount, timestamps, and redacted response evidence. | Unique local attempt key and provider reference; at most one open/pending/unknown attempt per checkout. Never store PAN/CVC. |
+| `PaymentAttempt` | Local attempt state, provider reference/ID, amount, timestamps, and redacted response evidence. | Unique local attempt key and provider reference; at most one open/pending/unknown attempt per checkout. `FAILED_LOCAL` is allowed only when no provider request could have been sent. Never store PAN/CVC. |
 | `WebhookReceipt` | Minimal verified receipt/fingerprint for durable dedupe and troubleshooting. | Signature and transaction identity validated before transition; duplicate receipt/state has no duplicate side effect. |
 | `Fulfillment` | Local delivery/order work created on confirmed approval. | Unique per checkout; created atomically with `PAID`/reservation commit. |
 
@@ -35,6 +35,7 @@ Possible lifecycle endpoints such as explicit cancellation/void and operational 
 - Require a fresh high-entropy client command key for checkout creation and each deliberate payment attempt. Scope it to a server-controlled guest/session/customer identity and operation; the identity mechanism is still an open decision.
 - In one PostgreSQL transaction, insert the scoped key/fingerprint and create its resource. A uniqueness race reads and returns the winning resource rather than making a second reservation or provider request.
 - If the same key is repeated with the same canonical business payload, return the original resource/state. If the key is reused with different business input, return `409` without mutation.
+- A locally rejected request that created no resource can be corrected and resubmitted. Once a payment attempt exists, replaying its key only reads that same attempt; if transport proves the request never left the API, an explicit new attempt may be created without counting as a provider-decline retry. If send may have started, return/retrieve `UNKNOWN_OUTCOME` and reconcile first.
 - Never store a raw card number/CVC. The provider card token is transient and must not appear in logs, error bodies, idempotency response bodies, or analytics. Do not persist it in a general outbox. A new deliberate payment attempt needs a new provider reference and newly tokenized card.
 - Use a unique provider reference for correlation, not as proof of provider-side replay safety. A provider duplicate-reference response is surfaced for reconciliation; it is not assumed to contain the original transaction result.
 

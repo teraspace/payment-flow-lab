@@ -5,7 +5,7 @@ Do not implement an unresolved business choice as if it were a confirmed require
 | Topic | Current proposal | Status / evidence needed |
 |---|---|---|
 | Initial reservation TTL | 10 minutes when no payment attempt has been dispatched; `PENDING`/unknown attempts retain the hold | Provisional; user must approve; define escalation for old unresolved attempts |
-| Retry policy | At most one explicit retry within 10 minutes after a confirmed terminal non-approved result; a retry is a new attempt, reference, and card token | Provisional; user must approve allowed states/count/window before implementing retry UI |
+| Retry policy | At most one explicit retry within 10 minutes after confirmed `DECLINED` or `ERROR`; a retry is a new attempt, reference, and card token. A transport failure proven before any provider request bytes were sent may be retried separately. Confirmed cancellation/`VOIDED` closes checkout | Provisional; user must approve allowed states/count/window and safe local-failure treatment before implementing retry UI |
 | Unknown payment outcome | Hold inventory, block another attempt, reconcile by signed event or server query when provider ID is known; never blind-resend | Domain invariant; current docs only establish status lookup by transaction ID; no query-by-reference guarantee. No-ID ambiguity may require operational review |
 | Late approval after reservation release | Fulfillment exception; never take another checkout's stock; decide fulfillment or compensation/refund separately | Provisional operational path; user must approve how the demo handles it |
 | Cancellation / void | Explicit cancel command only; keep stock held in `CANCEL_PENDING` until a terminal result; a confirmed void closes checkout | Provisional; user must approve whether cancellation is in scope and verify sandbox behavior in I3 |
@@ -31,7 +31,7 @@ For every resolved row, append: decision, date, evidence/source, whether it is a
 ## I0 decisions awaiting user validation
 
 1. Accept the baseline flow, scorecard, and React/NestJS/PostgreSQL/AWS Fargate/Terraform direction.
-2. Accept or revise the 10-minute no-attempt reservation and one explicit retry within 10 minutes of a confirmed terminal failure.
+2. Accept or revise the 10-minute no-attempt reservation and one explicit retry within 10 minutes of a confirmed `DECLINED`/`ERROR` result; cancellation/`VOIDED` closes the checkout.
 3. Accept that `PENDING` and `UNKNOWN_OUTCOME` keep inventory held and block another attempt; unresolved cases are reconciled/escalated, never auto-resubmitted.
 4. Accept that only confirmed approval commits stock and creates fulfillment; a late approval after stock release becomes a fulfillment exception, with compensation/refund handled separately.
 5. Decide whether user-initiated cancellation/void is required in the challenge's first complete flow.

@@ -38,11 +38,12 @@ A checkout and a payment attempt are separate resources. A repeated HTTP request
 
 | Observation | Local action | Reservation/retry policy |
 |---|---|---|
-| Failure proven to be local and before any provider request could be sent | Keep the command recoverable; do not create a second attempt for the same command | Keep the hold until its configured expiry |
+| Failure proven to be local and before any provider request could be sent | Mark the attempt `FAILED_LOCAL`; replaying its key returns that attempt. A deliberate retry uses a new attempt key/reference and fresh token | Keep the hold until its configured expiry; a proven pre-send failure does not consume a provider-decline retry |
 | Provider reports `PENDING` | Record the provider ID/state and await a signed event or backend reconciliation | Keep the hold; block another attempt |
 | Timeout/crash after sending may have begun | Mark `UNKNOWN_OUTCOME`; persist evidence and reconcile by event, provider query, or explicit operational review | Keep the hold; do not automatically resend, cancel, or accept a new charge |
 | Confirmed `APPROVED` | Apply an idempotent state transition; mark checkout paid and create fulfillment once | Commit the hold once |
-| Confirmed terminal non-approved state (`DECLINED`, `ERROR`, or `VOIDED`) | Close that attempt; permit only an explicit, bounded retry if the checkout and hold remain eligible | Release exactly once when the retry window ends or the checkout is explicitly cancelled |
+| Confirmed `DECLINED` or `ERROR` | Close that attempt; permit only an explicit, bounded retry if the checkout and hold remain eligible | Release exactly once when the retry window ends |
+| Confirmed `VOIDED` after explicit cancellation | Close the attempt and checkout as cancelled | Release exactly once; do not retry the cancelled checkout |
 | Approval arrives after stock was released or reassigned | Record a fulfillment exception and preserve the payment evidence; resolve fulfillment or compensation explicitly | Never take stock from another checkout; use a separate refund/compensation flow when required |
 
 An explicit cancellation/void is a business command, not a retry mechanism. Keep the reservation until a terminal provider result is observed. A successful payment that must be returned follows a separate refund flow. Do not represent a timeout as a decline.
@@ -51,7 +52,7 @@ Webhook processing must validate the provider signature and transaction identity
 
 ## Provisional demo policy
 
-The working proposal is a configurable 10-minute initial reservation, a 10-minute retry window after a terminal non-approved result, and at most one explicit retry. These are product assumptions, not provider guarantees or challenge requirements. An unresolved attempt does not expire into a blind retry; it must be reconciled or manually resolved. Confirm or revise these values at the decision gate before implementing expiration behavior.
+The working proposal is a configurable 10-minute initial reservation, a 10-minute retry window after a confirmed `DECLINED`/`ERROR`, and at most one explicit provider-decline retry. A failure proven to occur before request dispatch may use a new attempt without consuming that allowance. These are product assumptions, not provider guarantees or challenge requirements. An unresolved attempt does not expire into a blind retry; it must be reconciled or manually resolved. Confirm or revise these values at the decision gate before implementing expiration behavior.
 
 ## Test evidence expected
 

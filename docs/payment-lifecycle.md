@@ -16,7 +16,7 @@ Neither guarantee makes PostgreSQL atomic with an external payment request. A SQ
 |---|---|---|
 | Checkout | `RESERVED`, `PAYMENT_PENDING`, `PAID`, `PAYMENT_FAILED`, `CANCEL_PENDING`, `CANCELLED`, `EXPIRED`, `FULFILLMENT_EXCEPTION` | `PAID` is reached only on confirmed approval. `CANCELLED`/`EXPIRED` close new payment attempts. A late approval after release becomes an exception, not a stock adjustment against another buyer. |
 | Reservation | `HELD`, `COMMITTED`, `RELEASED` | Exactly one transition from `HELD` to `COMMITTED` or `RELEASED`. |
-| Payment attempt | `CREATED`, `DISPATCHING`, `PENDING`, `UNKNOWN_OUTCOME`, `APPROVED`, `DECLINED`, `ERROR`, `VOIDED` | Provider-terminal states are immutable evidence for that attempt. A new deliberate attempt is a new resource with a new local key, provider reference, and card token. |
+| Payment attempt | `CREATED`, `DISPATCHING`, `FAILED_LOCAL`, `PENDING`, `UNKNOWN_OUTCOME`, `APPROVED`, `DECLINED`, `ERROR`, `VOIDED` | `FAILED_LOCAL` is allowed only when evidence proves no provider request could have been sent. Provider-terminal states are immutable evidence. A deliberate new attempt is a new resource with a new local key, provider reference, and card token. |
 | Fulfillment | `READY`, `FULFILLMENT_EXCEPTION`, `CANCELLED` | Create at most once after confirmed approval. Actual delivery/shipping integration is outside the challenge baseline unless required by the brief. |
 
 ```mermaid
@@ -24,6 +24,7 @@ stateDiagram-v2
     [*] --> RESERVED: checkout + atomic stock hold
     RESERVED --> PAYMENT_PENDING: provider says PENDING
     RESERVED --> UNKNOWN_OUTCOME: timeout after send may have begun
+    RESERVED --> RESERVED: mark attempt FAILED_LOCAL when no request bytes were sent
     RESERVED --> EXPIRED: no payment attempt before hold expiry
     PAYMENT_PENDING --> PAID: confirmed APPROVED
     PAYMENT_PENDING --> PAYMENT_FAILED: confirmed DECLINED or ERROR
@@ -56,7 +57,8 @@ The selected synchronous dispatch keeps a short-lived card token in memory and a
 
 | Evidence | Domain decision | Stock and next attempt |
 |---|---|---|
-| Local validation fails before dispatch could start | Reject the command and retain useful validation state; do not create a provider transaction. | Existing hold stays until its normal expiry. The same corrected command may be resubmitted under a new command key if its payload changes. |
+| Local validation fails before an attempt is created | Reject the command and retain useful validation state; do not create a provider transaction. | Existing hold stays until its normal expiry. The corrected request may be submitted once valid. |
+| Transport evidence proves no provider request bytes could have been sent | Close the attempt as `FAILED_LOCAL`, recording why it is known not to have reached the provider. | Permit a deliberate new attempt with a new key and fresh card token; this does not consume the proposed retry reserved for a provider-terminal failure. |
 | The provider returns a confirmed terminal `DECLINED` or `ERROR` | Close that attempt as failed; preserve the response and correlation evidence. | Offer only the bounded explicit retry while the hold remains eligible. New attempt means a fresh token and new reference. |
 | The provider returns `PENDING` | Keep the attempt open and show a pending state. | Keep the hold; do not start another payment attempt. Poll the app's status endpoint and accept signed events. |
 | Network timeout/crash after sending may have begun | Mark `UNKNOWN_OUTCOME`; timeout is not decline. Preserve attempt/reference and reconcile by webhook or provider status lookup when provider transaction ID is known. | Keep the hold and block another charge. Never automatically resend the same attempt. If no transaction ID/event can resolve it, surface it for explicit operational review. |
@@ -76,8 +78,8 @@ The docs require unique transaction references but do not describe that field as
 ## Provisional demo policy for the I0 gate
 
 - Hold inventory for 10 minutes if checkout has no dispatched payment attempt.
-- Permit at most one explicit retry, for 10 minutes after a confirmed terminal non-approved result.
+- Permit at most one explicit retry, for 10 minutes after a confirmed `DECLINED` or `ERROR` result. A confirmed cancellation/`VOIDED` closes the checkout instead.
 - A pending or unknown attempt does not auto-expire into another charge. Keep stock held pending reconciliation; escalate old unresolved cases for review.
 - Calculate configured base/delivery fees server-side; exact values and customer/address fields remain to be confirmed from the challenge flow.
 
-These durations, retry count, and escalation behavior are product assumptions. Ask the user to approve or revise them before I2/I3 implements expiration or retry UI.
+These durations, retry count, and escalation behavior are product assumptions. Ask the user to approve or revise them before I2/I3 implements expiration or retry UI. If transport evidence cannot prove the request stayed local, use `UNKNOWN_OUTCOME`, not `FAILED_LOCAL`.
