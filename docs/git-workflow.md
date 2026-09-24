@@ -32,6 +32,13 @@ Use concise subjects that describe the change, not the company or candidate. Exa
 
 Do not squash away the complete feature history when the review environment permits preserving the meaningful commits. Never rewrite or force-push a branch after it has been published and shared.
 
+## Repository enforcement and public visibility
+
+- A draft PR and its feature branch in a public repository are public. “Draft” means not ready to merge; it does not hide the code. Avoid direct distribution to candidates, but do not treat a public repository as confidential or undiscoverable.
+- Before implementation, configure a GitHub ruleset for `main`: require a PR, prevent force-pushes, and prevent branch deletion. Do not require an extra GitHub reviewer by default; the explicit user validation gate is tracked separately.
+- Once CI is established in I1, require its relevant checks before merging: lint, typecheck, build, tests, and the agreed coverage thresholds. A green workflow is necessary evidence, not a replacement for user acceptance.
+- Keep secrets out of code, PR descriptions, test reports, screenshots, and CI logs. Use repository secrets for hosted tests and verify log masking. A local, unpushed branch can be used to check content before making a public branch/PR.
+
 ## Agent coordination inside a feature
 
 The integration owner creates and owns the feature branch, API/domain contract, and final PR. Assign each specialist bounded file ownership and acceptance evidence. Parallel specialists can analyze independently; parallel edits must not target the same files. The integration owner reconciles contributions, makes the feature commits, and runs the agreed gates. QA/security agents review the integrated PR read-only and file reproducible findings. Do not use separate role-based public PRs for pieces that only make sense when integrated.
@@ -53,4 +60,4 @@ A draft PR may show in-progress work, but do not ask for final acceptance while 
 
 ## Public repository gate
 
-The GitHub remote must be public; do not create a private GitHub staging repository. Before its first push, scan all files and commits for prohibited naming, secrets (including supplied sandbox keys), private data, and generated artifacts. Review the exact tree and baseline history with the user, then create the remote and make the initial push before I1 starts. The current checkout is still local, so its commits are not yet visible progress to the evaluator. After the initial-publication gate, push meaningful feature progress incrementally through public branches and PRs; do not defer all hosted history until final delivery.
+The GitHub remote must be public; do not create a private GitHub staging repository. Before its first push, scan all files and commits for prohibited naming, secrets (including supplied sandbox keys), private data, and generated artifacts. Review the exact tree and baseline history with the user, then create the remote, make the initial push, and protect `main` before I1 starts. The current checkout is still local, so its commits are not yet visible progress to the evaluator. After the initial-publication gate, push meaningful feature progress incrementally through public branches and PRs; do not defer all hosted history until final delivery.

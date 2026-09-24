@@ -15,6 +15,8 @@ Do not implement an unresolved business choice as if it were a confirmed require
 | Webhook signature and event fields | Validate documented checksum/signature and transaction data; persist receipt before acknowledgement | Verify exact signature inputs, ordering, retries, and sandbox support |
 | AWS region/networking and cost | ECS Fargate + PostgreSQL; compare network options and show a cost-aware Terraform plan | Decide in infrastructure iteration before any apply |
 | Public repository and progress history | GitHub target must be public; use feature branches, meaningful commits, and PRs while work progresses; no private GitHub staging repo | PDF requirement; this local repo has no remote yet. Review the complete tree/history, then create the public remote and make the initial push before I1; publish increments after that gate |
+| GitHub branch/CI enforcement | Protect `main` with PR-only changes and no force-push/deletion; require relevant CI checks once configured; keep user approval as a separate iteration gate | Workflow recommendation; set rules in I0/I1, after the public remote exists |
+| Public draft visibility | Treat branches, commits, PRs, and CI artifacts as public; draft status does not make them private | Consequence of public-repository requirement; scan content and outputs before pushing |
 
 ## Decision record format
 

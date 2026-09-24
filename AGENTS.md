@@ -40,6 +40,8 @@ Build the checkout challenge in this repository using the selected stack in `REA
 - Push feature progress to the required public GitHub repository as it becomes coherent, rather than keeping all progress local until one final upload. The challenge repository must not be mirrored to a private GitHub repository. Before the first public push, inspect the complete tree and commit history for prohibited naming, credentials, and private data. Do not share the repository link directly with candidates.
 - Keep the PR draft until its acceptance criteria and required checks have evidence. QA/security reviewers report findings against the integrated feature; the integration owner fixes and records them.
 - The user validates the completed iteration through its PR evidence before merge and before the next iteration begins. Prefer a merge strategy that preserves meaningful feature commits; do not rewrite published history or force-push shared branches.
+- After the initial public push, protect `main` with PR-only merges and no force-push/deletion. Once CI is available, require relevant lint, typecheck, build, test, and coverage checks. A green CI run never replaces the user's iteration gate.
+- Treat every public branch and draft PR as externally visible. Do not assume draft status hides code, and do not expose credentials in source, artifacts, screenshots, or CI logs.
 
 ## External release actions
 

@@ -4,8 +4,8 @@ Estimate: one discovery/decision iteration (I0), six implementation iterations (
 
 | Iteration | Scope | Gate |
 |---|---|---|
-| I0 — Requirements and lifecycle | Trace PDF requirements to acceptance criteria; close or explicitly accept API, inventory, payment-state, retry, and fulfillment assumptions; define contract and threat boundaries; inspect the public-safe baseline | User approves the scope, lifecycle matrix, provisional policies, and public remote/first push before I1 |
-| I1 — Foundation | Initialize app workspaces, local PostgreSQL workflow, migrations, typed config, CI, and API/UI shell | Clean install, lint/build, database migration, and contract skeleton evidence |
+| I0 — Requirements and lifecycle | Trace PDF requirements to acceptance criteria; close or explicitly accept API, inventory, payment-state, retry, and fulfillment assumptions; define contract and threat boundaries; inspect the public-safe baseline | User approves the scope, lifecycle matrix, provisional policies, public remote/first push, and `main` protection before I1 |
+| I1 — Foundation | Initialize app workspaces, local PostgreSQL workflow, migrations, typed config, CI, and API/UI shell | Clean install, lint/typecheck/build, database migration, contract skeleton, and initial required CI checks evidence |
 | I2 — Checkout and inventory | Catalog/checkout flow, server-side price calculation, atomic reservation, scoped idempotency, API persistence | PostgreSQL concurrency and duplicate-command gates pass |
 | I3 — Payment lifecycle | Provider adapter, durable dispatch/outbox, attempts, webhooks, status lookup, reconciliation, timeout and retry policy | Sandbox or controlled contract evidence; no blind duplicate request under ambiguous outcome |
 | I4 — React experience | Responsive checkout, accessible state/error handling, API integration, refresh recovery, approval/decline/pending/unknown states | Browser flow evidence on target mobile and desktop sizes |
