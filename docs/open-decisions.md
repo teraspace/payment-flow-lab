@@ -21,7 +21,7 @@ Do not implement an unresolved business choice as if it were a confirmed require
 | Webhook receipt retention | Store minimal verified event data/fingerprint, avoid unnecessary full payload/PII | Decide retention period and redaction policy before I3 |
 | AWS region/networking and cost | ECS Fargate + PostgreSQL; compare network options and show a cost-aware Terraform plan | Decide in infrastructure iteration before any apply |
 | Public repository and progress history | Public repository; feature branches, meaningful commits, and PRs; no private staging repo | Created as `teraspace/payment-flow-lab`; initial `main` and I0 feature branch pushed after user review; no candidate distribution |
-| GitHub branch/CI enforcement | Protect `main` with PR-only changes and no force-push/deletion; require relevant CI checks once configured; keep user approval as a separate iteration gate | `main` protection active; no additional reviewer or status checks required before CI exists; configure CI checks in I1 |
+| GitHub branch/CI enforcement | Protect `main` with PR-only changes and no force-push/deletion; require relevant CI checks once configured; keep user approval as a separate iteration gate | `main` protection active; `quality` and `database-migrations` are required status checks from I1; user validation remains a separate merge gate |
 | Public draft visibility | Treat branches, commits, PRs, and CI artifacts as public; draft status does not make them private | Consequence of public-repository requirement; scan content and outputs before pushing |
 
 ## Decision record format

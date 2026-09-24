@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Iteration 0 scope and lifecycle proposals are approved. The public GitHub repository is created and `main` is protected; application code, CI, and cloud resources have not started. The approved [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [remaining open decisions](docs/open-decisions.md) define the baseline for I1.
+Iteration 0 scope and lifecycle proposals are approved. I1's React/NestJS workspaces, local PostgreSQL workflow, initial migration, health endpoints, OpenAPI, and CI are implemented in [PR #3](https://github.com/teraspace/payment-flow-lab/pull/3); its local and hosted gates pass, and user validation is pending before merge. Checkout, payment processing, AWS resources, and Terraform deployment belong to later iterations. The approved [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [remaining open decisions](docs/open-decisions.md) define the baseline.
 
 ## Engineering rules
 
@@ -31,7 +31,19 @@ See [the engineering baseline](docs/engineering-baseline.md), [the iteration pla
 
 ## Local setup
 
-The toolchain and application commands will be added in the first implementation iteration. Do not copy real credentials into `.env.example`; use a local `.env` file, which is ignored by Git.
+Requirements: Node.js 24.15 or newer and Docker Compose.
+
+```sh
+cp .env.example .env
+npm ci
+npm run db:up
+npm run db:migrate
+npm run dev
+```
+
+The web app runs at `http://localhost:5173`; the API runs at `http://localhost:3000`. API health is available at `/api/v1/health/live` and `/api/v1/health/ready`; the generated OpenAPI UI is at `/api/v1/docs`. Stop the database with `npm run db:down`. The local PostgreSQL port is bound to loopback only. Do not copy real credentials into `.env.example`; use a local `.env` file, which is ignored by Git.
+
+The initial migration creates a product catalog table and database checks for non-negative prices/quantities and reserved inventory not exceeding physical inventory. It does not seed catalog rows; catalog behavior and seed data are introduced in I2.
 
 ## Feature progress and AI-assisted workflow
 

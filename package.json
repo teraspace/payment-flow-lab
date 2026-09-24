@@ -1,0 +1,38 @@
+{
+  "name": "payment-flow-lab",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm run dev --workspace @payment-flow-lab/api\" \"npm run dev --workspace @payment-flow-lab/web\"",
+    "dev:api": "npm run dev --workspace @payment-flow-lab/api",
+    "dev:web": "npm run dev --workspace @payment-flow-lab/web",
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:migrate": "node scripts/migrate.mjs up",
+    "db:migrate:down": "node scripts/migrate.mjs down"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.8.0",
+    "concurrently": "10.0.5",
+    "dotenv": "17.2.2",
+    "eslint": "10.11.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.7",
+    "globals": "16.4.0",
+    "node-pg-migrate": "9.0.0",
+    "prettier": "3.9.9",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.1"
+  }
+}
