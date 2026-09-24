@@ -63,3 +63,24 @@ jobs:
         run: npm ci
       - name: Apply database migrations
         run: npm run db:migrate
+
+  infrastructure:
+    name: infrastructure
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+          terraform_wrapper: false
+      - name: Format check
+        run: terraform fmt -check -recursive .
+      - name: Initialize providers without a backend
+        run: terraform init -backend=false -input=false -lockfile=readonly
+      - name: Validate configuration
+        run: terraform validate

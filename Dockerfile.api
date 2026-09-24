@@ -1,0 +1,37 @@
+FROM node:24-alpine AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+RUN npm ci
+
+COPY apps/api apps/api
+COPY scripts scripts
+RUN npm run build --workspace @payment-flow-lab/api
+
+FROM node:24-alpine AS runtime
+
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+RUN npm ci --omit=dev --workspace @payment-flow-lab/api --include-workspace-root=false \
+    && apk add --no-cache ca-certificates curl \
+    && curl --fail --silent --show-error --location \
+      https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+      --output /etc/ssl/certs/aws-rds-global-bundle.pem \
+    && chmod 0644 /etc/ssl/certs/aws-rds-global-bundle.pem \
+    && apk del curl
+
+COPY --from=build --chown=node:node /app/apps/api/dist apps/api/dist
+COPY --from=build --chown=node:node /app/apps/api/migrations apps/api/migrations
+COPY --from=build --chown=node:node /app/scripts/migrate.mjs scripts/migrate.mjs
+
+ENV DATABASE_SSL_CA_FILE=/etc/ssl/certs/aws-rds-global-bundle.pem
+EXPOSE 3000
+USER node
+CMD ["node", "apps/api/dist/main.js"]
