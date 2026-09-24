@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Repository scaffold and initial engineering decisions are in place. Application code, cloud resources, and external publication have not started.
+Iteration 0 planning artifacts are prepared for user validation: [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [open decisions](docs/open-decisions.md). Application code and cloud resources have not started. The public GitHub remote and `main` protection are still an I0 publication gate.
 
 ## Engineering rules
 
