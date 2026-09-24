@@ -14,7 +14,7 @@ Do not implement an unresolved business choice as if it were a confirmed require
 | Provider idempotency contract | Assume no remote exactly-once guarantee; use unique correlation per attempt and reconcile ambiguity | Verify exact sandbox endpoint and current provider documentation before integration |
 | Webhook signature and event fields | Validate documented checksum/signature and transaction data; persist receipt before acknowledgement | Verify exact signature inputs, ordering, retries, and sandbox support |
 | AWS region/networking and cost | ECS Fargate + PostgreSQL; compare network options and show a cost-aware Terraform plan | Decide in infrastructure iteration before any apply |
-| Public repository name / remote | `payment-flow-lab` is the local neutral name | GitHub remote is not created; confirm availability and release gate later |
+| Public repository and progress history | GitHub target must be public; use feature branches, meaningful commits, and PRs while work progresses; no private GitHub staging repo | PDF requirement; this local repo has no remote yet. Review the complete tree/history, then create the public remote and make the initial push before I1; publish increments after that gate |
 
 ## Decision record format
 

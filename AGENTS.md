@@ -29,9 +29,20 @@ Build the checkout challenge in this repository using the selected stack in `REA
 - Only a confirmed approval may commit inventory and create fulfillment, each once.
 - Never trust a client-supplied total; calculate monetary values on the API in integer minor units.
 
-## Git and external actions
+## Feature branches, commits, and pull requests
 
-- Use neutral feature branches and pull requests for implementation features. Keep commits focused and describe the change without naming the challenge company.
-- Do not push publicly, create a public release, deploy, or run `terraform apply` as an automatic consequence of finishing an iteration. These are explicit release gates.
-- Before any infrastructure change, show and review the Terraform plan, region, expected resources, and cost-bearing components.
+- Organize hosted work by feature, not by agent role. Use neutral names such as `feat/checkout-reservation`, `feat/payment-reconciliation`, or `fix/checkout-refresh`.
+- A feature may cross the API, web app, and database when that is one coherent user-visible slice. Split changes only when each resulting PR is independently reviewable and can pass its own gates.
+- Keep `main` as the integrated baseline. Do not commit directly to it during feature work.
+- Open a draft PR once the feature scope, acceptance criteria, and first meaningful progress exist. Update the same PR as the feature becomes reviewable; do not open a PR for every agent or prompt.
+- Make commits for real, coherent progress on the feature branch. Each feature PR should contain at least one meaningful commit; add commits at natural implementation, test, or documentation milestones. The PDF warns about a repository with no progress or commits, but it does not prescribe an arbitrary count or cadence. Never pad history with empty, cosmetic, or fabricated commits.
+- Use clear, neutral commit subjects, for example `feat: reserve stock atomically`, `test: cover checkout replay`, or `docs: record payment recovery policy`. Preserve the real AI and human work in the ledger; a commit is not a substitute for that record.
+- Push feature progress to the required public GitHub repository as it becomes coherent, rather than keeping all progress local until one final upload. The challenge repository must not be mirrored to a private GitHub repository. Before the first public push, inspect the complete tree and commit history for prohibited naming, credentials, and private data. Do not share the repository link directly with candidates.
+- Keep the PR draft until its acceptance criteria and required checks have evidence. QA/security reviewers report findings against the integrated feature; the integration owner fixes and records them.
+- The user validates the completed iteration through its PR evidence before merge and before the next iteration begins. Prefer a merge strategy that preserves meaningful feature commits; do not rewrite published history or force-push shared branches.
+
+## External release actions
+
+- The public GitHub repository is a challenge deliverable. Review the exact tree and baseline history with the user, then create the public remote and make the initial push before I1 starts. Do not use a private GitHub staging repo. After that initial gate, publish feature progress incrementally as described above; do not defer all hosted progress until final delivery.
+- AWS deployment and `terraform apply` are separate release gates. Before either, show the Terraform plan, region, resources, exposure, and cost-bearing components.
 - Never claim a deployment, test, coverage number, or review without observable evidence.
