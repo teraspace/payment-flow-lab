@@ -8,10 +8,10 @@ Amounts use integer COP units. I2 implements the product catalog and anonymous c
 |---|---|---|
 | `products` | Seeded catalog, price, physical and reserved quantity. | `0 <= reserved_quantity <= physical_quantity`; public routes cannot change price or stock. |
 | `guest_sessions` | Server-issued anonymous session whose opaque token is kept in an HttpOnly cookie. | Only a SHA-256 token hash is stored; session scope owns checkout writes, replays, and reads. |
-| `customers` / `deliveries` | Minimal buyer and delivery snapshots for one checkout. | No payment-card data is accepted or persisted; exact retention remains open. |
+| `customers` / `deliveries` | Minimal buyer and delivery snapshots for one checkout. | No payment-card data is accepted or persisted. After 30 days from checkout creation, a scheduled job clears name/email and recipient/address together. |
 | `checkouts` / `checkout_items` | Checkout state, customer/delivery links, integer totals, and immutable item price/name/SKU snapshot. | The API computes totals; later catalog price changes do not alter an existing checkout. I2 supports one product per checkout. |
 | `reservations` | Held product quantity and expiry. | `HELD` transitions once to `RELEASED`; both reservation state and product counter change in the same PostgreSQL transaction. |
-| `idempotency_records` | Session scope, operation, key hash, canonical payload fingerprint, and checkout reference. | Unique `(guest_session_id, operation, idempotency_key_hash)`; same payload replays the checkout, different payload returns `409`. |
+| `idempotency_records` | Session scope, operation, key hash, canonical payload fingerprint, and checkout reference. | Unique `(guest_session_id, operation, idempotency_key_hash)`; same payload replays the checkout, different payload returns `409`. At 30 days the PII-derived fingerprint is cleared while the key and checkout history remain; replay then returns `410`. |
 
 PostgreSQL transactions and a conditional `UPDATE products ... WHERE physical_quantity - reserved_quantity >= quantity` protect inventory. The database check also rejects a negative available count. Domain idempotency is a separate API promise: a uniqueness constraint alone is not the replay contract.
 
@@ -53,17 +53,21 @@ The cookie uses `SameSite=Lax`. Terraform routes `/api/*` through the same Cloud
 
 The last property is optional and ignored; all accepted amounts come from the server's product snapshot and configured fees. Names/email/address are trimmed; email is lowercased. Validation and PostgreSQL constraints both enforce the size and quantity limits.
 
-The response includes `checkoutId`, `state` (`RESERVED` or `EXPIRED`), customer and delivery snapshots, one item with snapshotted price/name/SKU, `subtotalMinor`, `baseFeeMinor`, `deliveryFeeMinor`, `totalAmountInMinorUnits`, `currency`, and reservation state/expiry. Amounts are non-negative safe integers in COP units.
+The response includes `checkoutId`, `state` (`RESERVED` or `EXPIRED`), customer and delivery snapshots, one item with snapshotted price/name/SKU, `subtotalMinor`, `baseFeeMinor`, `deliveryFeeMinor`, `totalAmountInMinorUnits`, `currency`, and reservation state/expiry. Amounts are non-negative safe integers in COP units. After the retention job redacts personal data, the four customer/delivery values are returned as `null`; the checkout and inventory history remain readable by its guest session.
 
 The fee variables are `CHECKOUT_BASE_FEE_MINOR` and `CHECKOUT_DELIVERY_FEE_MINOR`; the user approved demo defaults of COP 5,000 base charge and COP 8,000 delivery. These are configurable whole-COP amounts, not taxes or withholding. The integration suite sets the same values explicitly to prove that the API ignores a client-supplied total. `CHECKOUT_RESERVATION_TTL_SECONDS` defaults to `600`, and `GUEST_SESSION_TTL_DAYS` defaults to `30` (the user approved this session lifetime on 2026-09-24).
 
 ## Idempotency and transaction boundary
 
-1. The API hashes the idempotency key and hashes a normalized canonical payload containing product, quantity, customer, and delivery fields.
+1. The API hashes the idempotency key and hashes a normalized canonical payload containing product, quantity, customer, and delivery fields. The fingerprint is temporary because it is derived from personal data.
 2. In one PostgreSQL transaction, it claims the unique session/operation/key hash before touching inventory. The winning request reserves stock with a conditional update, inserts customer/delivery/checkout/item/reservation snapshots, then commits.
 3. A uniqueness race waits for the winning transaction. Matching fingerprint returns the existing checkout without another stock update. A different fingerprint returns `409` without mutation.
 4. If the stock is insufficient or any later write fails, rollback removes the key claim, stock increment, checkout, customer, delivery, and reservation. A rejected request that created no checkout may be retried with corrected input.
 5. GET checkout and idempotency replay require the original guest cookie. Checkout identifiers alone do not grant access.
+
+Every five minutes, the API checks for checkouts at least 30 days old and redacts up to 500 per PostgreSQL transaction. It clears customer name/email, recipient/address, and the request fingerprint together, but retains totals, item snapshots, reservations, checkout rows, session ownership, and the idempotency-key hash. The scheduler is safe to run in more than one task: it locks candidate checkouts and skips rows another task is processing. After fingerprint removal, replaying the old idempotency key returns `410 Gone`; it cannot reconstruct the original response from a PII digest.
+
+Redaction is intentionally irreversible. The retention migration refuses to restore `NOT NULL` if any row has already been scrubbed; recovering that data requires a separately protected backup, not a synthetic replacement value.
 
 Database consistency protects each local transition; idempotency makes repeated commands resolve to one stable domain resource. Neither property provides exactly-once execution across a future payment-provider boundary.
 
@@ -85,6 +89,7 @@ Explicit cancellation/void, operational reconciliation, and fulfillment endpoint
 - `401 Unauthorized`: missing, invalid, or expired guest session.
 - `404 Not Found`: product is absent/inactive, or checkout is not owned by this guest session.
 - `409 Conflict`: insufficient stock or the same idempotency key with a different canonical request.
+- `410 Gone`: the checkout's 30-day idempotency replay window elapsed and its request fingerprint was redacted.
 - `422 Unprocessable Entity`: a server-calculated amount exceeds the safe integer range.
 - `503 Service Unavailable`: the health readiness check cannot reach PostgreSQL.
 

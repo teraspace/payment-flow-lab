@@ -108,6 +108,32 @@ curl --fail --silent --show-error "$application_url/api/v1/health/ready"
 curl --fail --silent --show-error "$application_url/api/v1/docs" -o /dev/null
 ```
 
+## Updating the deployed API with a database migration
+
+For a backward-compatible schema migration, register the new migration task definition independently while leaving the running API on its current image. Replace `i2-<commit>` below with the immutable image tag built from the reviewed feature commit. Keep the API image at its currently deployed tag (`i1-bootstrap` for the current stack):
+
+```sh
+../../scripts/terraform-aws.sh plan \
+  -var='api_image_tag=i1-bootstrap' \
+  -var='migration_image_tag=i2-<commit>' \
+  -out=tfplan-migration
+../../scripts/terraform-aws.sh show tfplan-migration
+```
+
+Review the plan before applying it. It should register a migration task-definition revision without changing the ECS API service. After that reviewed plan is applied, build and push the immutable image to ECR, then run `../../scripts/run-aws-migration.sh` and confirm exit code `0`.
+
+Only after the migration succeeds, review the service rollout plan with both image tags set to the new commit:
+
+```sh
+../../scripts/terraform-aws.sh plan \
+  -var='api_image_tag=i2-<commit>' \
+  -var='migration_image_tag=i2-<commit>' \
+  -out=tfplan-api
+../../scripts/terraform-aws.sh show tfplan-api
+```
+
+That plan updates the API task definition and ECS service; apply it only after review. The migration variable defaults to `api_image_tag`, preserving the single-tag behavior for existing deployments that do not set it explicitly.
+
 ## Cleanup
 
 `terraform destroy` removes this challenge environment, including the RDS instance without a final snapshot. Do not use it if the database contains data that must be retained. Keep the plan/state local and never publish them. Confirm the resources are gone in the AWS console/Billing after cleanup; CloudFront distributions can take time to disable and delete.

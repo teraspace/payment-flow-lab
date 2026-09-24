@@ -94,6 +94,13 @@ variable "api_image_tag" {
   default     = "i1-bootstrap"
 }
 
+variable "migration_image_tag" {
+  description = "Optional immutable image tag for the one-off migration task; defaults to api_image_tag."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
 variable "service_desired_count" {
   description = "Desired API tasks; use 0 only for the initial bootstrap, then keep the steady-state default at 1."
   type        = number

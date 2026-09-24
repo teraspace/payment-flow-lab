@@ -18,6 +18,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiProperty,
+  ApiResponse,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -30,19 +31,19 @@ import { CheckoutsService, CheckoutView } from './checkouts.service';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 
 class CheckoutCustomerResponse {
-  @ApiProperty()
-  fullName!: string;
+  @ApiProperty({ type: String, nullable: true })
+  fullName!: string | null;
 
-  @ApiProperty()
-  email!: string;
+  @ApiProperty({ type: String, nullable: true })
+  email!: string | null;
 }
 
 class CheckoutDeliveryResponse {
-  @ApiProperty()
-  recipient!: string;
+  @ApiProperty({ type: String, nullable: true })
+  recipient!: string | null;
 
-  @ApiProperty()
-  address!: string;
+  @ApiProperty({ type: String, nullable: true })
+  address!: string | null;
 }
 
 class CheckoutItemResponse {
@@ -129,6 +130,10 @@ export class CheckoutsController {
     name: 'Idempotency-Key',
     required: true,
     schema: { type: 'string', minLength: 16, maxLength: 128 },
+  })
+  @ApiResponse({
+    status: 410,
+    description: 'The checkout replay window expired after personal-data redaction.',
   })
   @ApiCreatedResponse({ type: CheckoutResponse })
   @ApiOkResponse({ description: 'Replay of the existing checkout.', type: CheckoutResponse })

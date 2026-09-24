@@ -5,11 +5,13 @@ import { Pool } from 'pg';
 import request from 'supertest';
 import { AppModule } from '../app.module';
 import { configureApplication } from '../configure-application';
+import { CheckoutPiiRetentionService } from './checkout-pii-retention.service';
 
 describe('checkout API (PostgreSQL)', () => {
   let app: INestApplication;
   let database: Pool;
   let cookie: string;
+  let piiRetention: CheckoutPiiRetentionService;
 
   const productSkus = {
     notebook: 'desk-notebook',
@@ -68,6 +70,7 @@ describe('checkout API (PostgreSQL)', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    piiRetention = moduleRef.get(CheckoutPiiRetentionService);
     app = moduleRef.createNestApplication({ logger: false });
     configureApplication(app, moduleRef.get(ConfigService));
     await app.init();
@@ -100,6 +103,10 @@ describe('checkout API (PostgreSQL)', () => {
 
   afterAll(async () => {
     await app.close();
+    await database.query(`
+      TRUNCATE idempotency_records, reservations, checkout_items, checkouts,
+               deliveries, customers, guest_sessions;
+    `);
     await database.end();
   });
 
@@ -233,6 +240,67 @@ describe('checkout API (PostgreSQL)', () => {
       checkout_count: '1',
       reservation_count: '1',
       idempotency_count: '1',
+    });
+  });
+
+  it('redacts checkout PII and its request fingerprint after 30 days without deleting history', async () => {
+    const productId = await getProductId(productSkus.notebook);
+    const olderKey = 'retention-checkout-old-001';
+    const recentKey = 'retention-checkout-new-001';
+    const older = await postCheckout(cookie, olderKey, checkoutPayload(productId)).expect(201);
+    const recent = await postCheckout(cookie, recentKey, checkoutPayload(productId)).expect(201);
+
+    await database.query(
+      `UPDATE checkouts
+       SET created_at = now() - interval '30 days' - interval '1 second'
+       WHERE id = $1`,
+      [older.body.checkoutId],
+    );
+
+    await expect(piiRetention.redactExpiredPersonalData()).resolves.toBe(1);
+
+    const redacted = await request(app.getHttpServer())
+      .get(`/api/v1/checkouts/${older.body.checkoutId}`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(redacted.body.customer).toEqual({ fullName: null, email: null });
+    expect(redacted.body.delivery).toEqual({ recipient: null, address: null });
+
+    const retained = await request(app.getHttpServer())
+      .get(`/api/v1/checkouts/${recent.body.checkoutId}`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(retained.body.customer).toEqual({
+      fullName: 'Ada Lovelace',
+      email: 'ada@example.test',
+    });
+    expect(retained.body.delivery).toEqual({
+      recipient: 'Ada Lovelace',
+      address: '123 Example Street, Apartment 4',
+    });
+
+    await postCheckout(cookie, olderKey, checkoutPayload(productId)).expect(410);
+    await postCheckout(cookie, recentKey, checkoutPayload(productId)).expect(200);
+
+    const history = await database.query<{
+      checkout_count: string;
+      reservation_count: string;
+      redacted_fingerprint_count: string;
+      reserved_quantity: number;
+    }>(`
+      SELECT
+        (SELECT count(*) FROM checkouts) AS checkout_count,
+        (SELECT count(*) FROM reservations) AS reservation_count,
+        (SELECT count(*) FROM idempotency_records WHERE fingerprint_hash IS NULL)
+          AS redacted_fingerprint_count,
+        (SELECT reserved_quantity FROM products WHERE sku = 'desk-notebook')
+          AS reserved_quantity
+    `);
+    expect(history.rows[0]).toEqual({
+      checkout_count: '2',
+      reservation_count: '2',
+      redacted_fingerprint_count: '1',
+      reserved_quantity: 2,
     });
   });
 

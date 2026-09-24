@@ -132,7 +132,7 @@ resource "aws_ecs_task_definition" "migration" {
 
   container_definitions = jsonencode([{
     name       = "migration"
-    image      = "${aws_ecr_repository.api.repository_url}:${var.api_image_tag}"
+    image      = "${aws_ecr_repository.api.repository_url}:${coalesce(var.migration_image_tag, var.api_image_tag)}"
     essential  = true
     entryPoint = ["node"]
     command    = ["scripts/migrate.mjs", "up"]

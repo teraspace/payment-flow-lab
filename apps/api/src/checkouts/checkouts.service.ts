@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
+  GoneException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -26,7 +27,7 @@ interface ProductReservationRow extends QueryResultRow {
 }
 
 interface ExistingIdempotencyRow extends QueryResultRow {
-  fingerprint_hash: string;
+  fingerprint_hash: string | null;
   checkout_id: string;
 }
 
@@ -40,10 +41,10 @@ interface CheckoutRow extends QueryResultRow {
   currency: string;
   reservation_expires_at: Date;
   created_at: Date;
-  customer_name: string;
-  customer_email: string;
-  recipient: string;
-  delivery_address: string;
+  customer_name: string | null;
+  customer_email: string | null;
+  recipient: string | null;
+  delivery_address: string | null;
   reservation_state: 'HELD' | 'RELEASED';
   product_id: string;
   product_sku: string;
@@ -56,8 +57,8 @@ interface CheckoutRow extends QueryResultRow {
 export interface CheckoutView {
   checkoutId: string;
   state: 'RESERVED' | 'EXPIRED';
-  customer: { fullName: string; email: string };
-  delivery: { recipient: string; address: string };
+  customer: { fullName: string | null; email: string | null };
+  delivery: { recipient: string | null; address: string | null };
   item: {
     productId: string;
     sku: string;
@@ -150,6 +151,11 @@ export class CheckoutsService {
         if (!record) {
           throw new InternalServerErrorException(
             'The idempotency record could not be recovered.',
+          );
+        }
+        if (record.fingerprint_hash === null) {
+          throw new GoneException(
+            'This checkout replay window has expired. Start a new guest session.',
           );
         }
         if (record.fingerprint_hash.trim() !== fingerprintHash) {
