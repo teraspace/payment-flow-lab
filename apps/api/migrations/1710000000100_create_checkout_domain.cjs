@@ -4,7 +4,7 @@ exports.up = (pgm) => {
       ADD COLUMN description text NOT NULL DEFAULT '',
       ADD COLUMN image_url text NOT NULL DEFAULT '';
 
-    -- A duplicate SKU must fail the migration; skipping it would make `down`
+    -- A duplicate SKU must fail the migration; skipping it would make rollback
     -- indistinguishable from ownership of a pre-existing product row.
     INSERT INTO products (
       sku, name, description, image_url, price_minor, currency,
