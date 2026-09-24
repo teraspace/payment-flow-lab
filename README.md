@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Iteration 0 and I1 are complete. The I1 foundation is deployed at the demo URL; it exposes the React shell, API health/docs, and the initial schema. I2 is implemented on `feat/checkout-reservation` and awaits its PR and AWS release gates: the API slice adds the seeded catalog, anonymous guest-session scope, checkout snapshots, atomic stock holds, expiry, PostgreSQL-backed idempotency, and 30-day PII redaction. It does not yet process payments or provide the customer-facing checkout UI. Review the [requirements and scorecard](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [open decisions](docs/open-decisions.md).
+Iteration 0 and I1 are complete. I2 is merged in PR #8 and deployed at [the demo URL](https://d2ump7odi96dfi.cloudfront.net). The API provides a seeded catalog, anonymous guest-session ownership, checkout snapshots, atomic stock holds, expiry, scoped idempotency, and 30-day PII redaction. The deployed React app is still the I1 shell; payment-provider integration and the customer-facing checkout UI remain future iterations. Review the [requirements and scorecard](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [open decisions](docs/open-decisions.md).
 
 ## Engineering rules
 
