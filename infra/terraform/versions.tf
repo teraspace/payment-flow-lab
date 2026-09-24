@@ -95,9 +95,9 @@ variable "api_image_tag" {
 }
 
 variable "service_desired_count" {
-  description = "Set to 0 for the infrastructure/bootstrap phase and 1 after the API image is pushed."
+  description = "Desired API tasks; use 0 only for the initial bootstrap, then keep the steady-state default at 1."
   type        = number
-  default     = 0
+  default     = 1
 
   validation {
     condition     = var.service_desired_count >= 0 && var.service_desired_count <= 2
