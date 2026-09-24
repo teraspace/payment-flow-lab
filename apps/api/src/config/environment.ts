@@ -20,13 +20,13 @@ const environmentSchema = z.object({
     .int()
     .min(0)
     .max(Number.MAX_SAFE_INTEGER)
-    .default(0),
+    .default(5_000),
   CHECKOUT_DELIVERY_FEE_MINOR: z.coerce
     .number()
     .int()
     .min(0)
     .max(Number.MAX_SAFE_INTEGER)
-    .default(0),
+    .default(8_000),
   CHECKOUT_RESERVATION_TTL_SECONDS: z.coerce
     .number()
     .int()

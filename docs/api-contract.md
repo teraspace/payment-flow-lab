@@ -33,7 +33,7 @@ I2 has no product-write route. Product seed fixtures are installed by migration.
 
 The guest session must be initialized before the first checkout request. The browser sends the cookie with credentials. `Idempotency-Key` accepts 16–128 ASCII letters, digits, periods, underscores, colons, or hyphens; clients should use a cryptographically random value such as `crypto.randomUUID()`.
 
-The local cookie uses `SameSite=Lax`. For the planned CloudFront-to-Fargate cross-site browser deployment, route API calls through the frontend site or configure `SameSite=None; Secure` and verify credentialed CORS/CSRF protections before deployment; I2 does not verify that production browser path.
+The cookie uses `SameSite=Lax`. Terraform routes `/api/*` through the same CloudFront hostname as the frontend, so browser calls stay same-site. The full browser checkout path remains to be verified in I4/I6.
 
 ```json
 {
@@ -55,7 +55,7 @@ The last property is optional and ignored; all accepted amounts come from the se
 
 The response includes `checkoutId`, `state` (`RESERVED` or `EXPIRED`), customer and delivery snapshots, one item with snapshotted price/name/SKU, `subtotalMinor`, `baseFeeMinor`, `deliveryFeeMinor`, `totalAmountInMinorUnits`, `currency`, and reservation state/expiry. Amounts are non-negative safe integers in COP units.
 
-The fee variables are `CHECKOUT_BASE_FEE_MINOR` and `CHECKOUT_DELIVERY_FEE_MINOR`; both default to `0` until their demo values are approved. The integration suite sets fixture values explicitly to prove that the API ignores a client-supplied total. `CHECKOUT_RESERVATION_TTL_SECONDS` defaults to `600`, and `GUEST_SESSION_TTL_DAYS` defaults to `30`.
+The fee variables are `CHECKOUT_BASE_FEE_MINOR` and `CHECKOUT_DELIVERY_FEE_MINOR`; the user approved demo defaults of COP 5,000 base charge and COP 8,000 delivery. These are configurable whole-COP amounts, not taxes or withholding. The integration suite sets the same values explicitly to prove that the API ignores a client-supplied total. `CHECKOUT_RESERVATION_TTL_SECONDS` defaults to `600`, and `GUEST_SESSION_TTL_DAYS` defaults to `30`.
 
 ## Idempotency and transaction boundary
 

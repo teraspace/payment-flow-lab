@@ -51,7 +51,7 @@ PostgreSQL is the authority for product price and inventory. `products.reserved_
 
 Run the API integration suite with `npm run test:api`. It recreates and drops only a local database whose name ends in `_test` (default `payment_flow_lab_test`), applies and rolls back migrations, and uses independent PostgreSQL connections for concurrency checks. It does not reset the developer database named in `.env`.
 
-For the AWS deployment preview, see [`infra/terraform/README.md`](infra/terraform/README.md). The I1 API image is built for ARM64 Fargate and the web app uses a same-origin `/api/v1` route through CloudFront. I2 has not been deployed; customer-data retention and demo fee values remain open for review before exposing its checkout routes.
+For the AWS deployment preview, see [`infra/terraform/README.md`](infra/terraform/README.md). The I1 API image is built for ARM64 Fargate and the web app uses a same-origin `/api/v1` route through CloudFront. I2 has not been deployed; customer-data retention remains open before exposing its checkout routes. Demo defaults are COP 5,000 base and COP 8,000 delivery.
 
 ## Feature progress and AI-assisted workflow
 
