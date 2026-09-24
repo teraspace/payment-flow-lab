@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480" role="img" aria-labelledby="title">
+  <title id="title">Bolso de lona ilustrado</title>
+  <rect width="640" height="480" rx="36" fill="#f4e8df"/>
+  <ellipse cx="320" cy="377" rx="152" ry="23" fill="#dec9bc"/>
+  <path d="M226 161h188l24 193H202z" fill="#c77d58"/>
+  <path d="M265 168v-41c0-31 25-56 55-56s55 25 55 56v41" fill="none" stroke="#36534a" stroke-width="20" stroke-linecap="round"/>
+  <path d="M245 188h150" stroke="#e9b899" stroke-width="8" stroke-linecap="round"/>
+  <path d="M280 241h80" stroke="#f3dfcf" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="320" cy="270" r="8" fill="#36534a"/>
+</svg>

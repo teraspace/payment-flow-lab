@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Iteration 0 is complete, and I1's React/NestJS workspaces, local PostgreSQL workflow, initial migration, health endpoints, OpenAPI, and CI were merged from [PR #3](https://github.com/teraspace/payment-flow-lab/pull/3) on 2026-09-24. The user has requested an early deployment of this foundation shell; its Terraform and container changes are under review in a separate feature PR. That deployment exposes only the React shell, API health/docs, and the initial database schema. Checkout and payment processing remain out of scope. The approved [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [remaining open decisions](docs/open-decisions.md) define the baseline.
+Iteration 0 is complete. I1's React/NestJS workspaces, local PostgreSQL workflow, health endpoints, OpenAPI, and CI are integrated. The I1 foundation is deployed at the demo URL; it exposes the React shell, API health/docs, and the initial schema. I2 is being implemented on `feat/checkout-reservation`: the API slice adds the seeded catalog, anonymous guest-session scope, checkout snapshots, atomic stock holds, expiry, and PostgreSQL-backed idempotency. I2 is not deployed and does not yet process payments or provide the customer-facing checkout UI. Review the [requirements and scorecard](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [open decisions](docs/open-decisions.md).
 
 ## Engineering rules
 
@@ -43,9 +43,15 @@ npm run dev
 
 The web app runs at `http://localhost:5173`; the API runs at `http://localhost:3000`. API health is available at `/api/v1/health/live` and `/api/v1/health/ready`; the generated OpenAPI UI is at `/api/v1/docs`. Stop the database with `npm run db:down`. The local PostgreSQL port is bound to loopback only. Do not copy real credentials into `.env.example`; use a local `.env` file, which is ignored by Git.
 
-The initial migration creates a product catalog table and database checks for non-negative prices/quantities and reserved inventory not exceeding physical inventory. It does not seed catalog rows; catalog behavior and seed data are introduced in I2.
+The initial migration creates a product catalog table and database checks for non-negative prices/quantities and reserved inventory not exceeding physical inventory. The I2 migration seeds three neutral demo products and adds guest sessions, customer/delivery snapshots, checkout and item price snapshots, reservations, and scoped idempotency records. The API exposes catalog reads and guest-owned checkout creation/recovery; there is no public product-write endpoint.
 
-For the AWS deployment preview, see [`infra/terraform/README.md`](infra/terraform/README.md). The API image is built for ARM64 Fargate and the web app uses a same-origin `/api/v1` route through CloudFront.
+## Data model and API
+
+PostgreSQL is the authority for product price and inventory. `products.reserved_quantity` is changed only by a conditional update inside the same transaction that creates a `checkouts` row, its `checkout_items` price snapshot, a `reservations` row, and an `idempotency_records` row. `customers` and `deliveries` store only the name/email and recipient/address fields needed by the demo. A guest session is represented by an opaque HttpOnly cookie; PostgreSQL stores only its token hash. Full endpoint shapes and the separation between live I2 routes and planned payment routes are documented in [`docs/api-contract.md`](docs/api-contract.md).
+
+Run the API integration suite with `npm run test:api`. It recreates and drops only a local database whose name ends in `_test` (default `payment_flow_lab_test`), applies and rolls back migrations, and uses independent PostgreSQL connections for concurrency checks. It does not reset the developer database named in `.env`.
+
+For the AWS deployment preview, see [`infra/terraform/README.md`](infra/terraform/README.md). The I1 API image is built for ARM64 Fargate and the web app uses a same-origin `/api/v1` route through CloudFront. I2 has not been deployed; customer-data retention and demo fee values remain open for review before exposing its checkout routes.
 
 ## Feature progress and AI-assisted workflow
 

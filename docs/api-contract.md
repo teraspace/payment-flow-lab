@@ -1,71 +1,91 @@
-# Initial API contract (I0 proposal)
+# API contract: I0 baseline and I2 implementation
 
-This is a resource and behavior contract for review, not generated OpenAPI and not an implemented API. JSON property names and precise customer/delivery fields may change after the user resolves the open decisions. Amounts use integer COP minor units.
+Amounts use integer COP units. I2 implements the product catalog and anonymous checkout reservation slice; the provider, card, webhook, payment-attempt, and fulfillment routes remain planned for I3. This document distinguishes live routes from the approved later design.
 
-## Domain records to persist
+## I2 implemented records
 
-| Record | Purpose | Key consistency rule |
+| Record | Purpose | Consistency rule |
 |---|---|---|
-| `Product` | Seeded catalog, unit price, and physical/reserved quantity. | `0 <= reserved_quantity <= physical_quantity`; only the API changes price/stock. |
-| `Checkout` / `CheckoutItem` | Customer/delivery snapshot, immutable price/fee snapshot, and checkout state. | The accepted total is computed and stored by the API; never recompute historical attempts using a later catalog price. |
-| `Reservation` | Quantity held for a checkout. | One active hold per checkout/item; `HELD` transitions once to `COMMITTED` or `RELEASED`. |
-| `IdempotencyRecord` | Scope, key, canonical request fingerprint, resource ID, and stable result reference. | Unique `(scope, operation, key)`; same fingerprint replays the resource; different fingerprint returns `409 Conflict`. |
-| `PaymentAttempt` | Local attempt state, provider reference/ID, amount, timestamps, and redacted response evidence. | Unique local attempt key and provider reference; at most one open/pending/unknown attempt per checkout. `FAILED_LOCAL` is allowed only when no provider request could have been sent. Never store PAN/CVC. |
-| `WebhookReceipt` | Minimal verified receipt/fingerprint for durable dedupe and troubleshooting. | Signature and transaction identity validated before transition; duplicate receipt/state has no duplicate side effect. |
-| `Fulfillment` | Local delivery/order work created on confirmed approval. | Unique per checkout; created atomically with `PAID`/reservation commit. |
+| `products` | Seeded catalog, price, physical and reserved quantity. | `0 <= reserved_quantity <= physical_quantity`; public routes cannot change price or stock. |
+| `guest_sessions` | Server-issued anonymous session whose opaque token is kept in an HttpOnly cookie. | Only a SHA-256 token hash is stored; session scope owns checkout writes, replays, and reads. |
+| `customers` / `deliveries` | Minimal buyer and delivery snapshots for one checkout. | No payment-card data is accepted or persisted; exact retention remains open. |
+| `checkouts` / `checkout_items` | Checkout state, customer/delivery links, integer totals, and immutable item price/name/SKU snapshot. | The API computes totals; later catalog price changes do not alter an existing checkout. I2 supports one product per checkout. |
+| `reservations` | Held product quantity and expiry. | `HELD` transitions once to `RELEASED`; both reservation state and product counter change in the same PostgreSQL transaction. |
+| `idempotency_records` | Session scope, operation, key hash, canonical payload fingerprint, and checkout reference. | Unique `(guest_session_id, operation, idempotency_key_hash)`; same payload replays the checkout, different payload returns `409`. |
 
-The initial database concurrency strategy is a conditional stock update or row lock inside PostgreSQL. Local checkout and hold changes are transactional. Provider calls, webhook delivery, and email/delivery effects are external boundaries and cannot participate in the SQL transaction.
+PostgreSQL transactions and a conditional `UPDATE products ... WHERE physical_quantity - reserved_quantity >= quantity` protect inventory. The database check also rejects a negative available count. Domain idempotency is a separate API promise: a uniqueness constraint alone is not the replay contract.
 
-## Proposed routes
+## I2 live routes
 
-| Method and route | Purpose | Expected behavior |
-|---|---|---|
-| `GET /api/v1/products` | List seeded products. | Return catalog price and derived available stock; no product write route is needed for the challenge. |
-| `GET /api/v1/products/{productId}` | Product detail. | Return `404` for unknown product. |
-| `POST /api/v1/checkouts` | Create checkout and reserve inventory. | Requires `Idempotency-Key`; atomically validates stock, snapshots server-calculated totals, persists the hold. Return `201` on first creation and the same checkout on replay. Return `409` for insufficient stock or same key with different request. |
-| `GET /api/v1/checkouts/{checkoutId}` | Read canonical checkout, reservation, and payment state. | Return safe customer-facing status/amounts; never return private provider credentials or card details. This is the frontend's refresh-recovery source. |
-| `POST /api/v1/checkouts/{checkoutId}/payment-attempts` | Start one explicit card attempt. | Requires a separate `Idempotency-Key`, one-time provider card token, current acceptance tokens/consent evidence, and an eligible active hold. Persist attempt before provider call; call outside SQL transaction. Return `202 Accepted` while pending/unknown or a confirmed local attempt representation. |
-| `GET /api/v1/checkouts/{checkoutId}/payment-attempts/{attemptId}` | Read one attempt. | Return only local status and safe provider identifiers/details. A client retry with the same key reads the same attempt; it never starts another provider POST. |
-| `POST /api/v1/webhooks/payment-events` | Receive provider events. | Verify signature using provider event configuration, validate transaction identity/state, persist the minimal receipt, apply the idempotent transition, then acknowledge. Redeliveries are safe. |
+| Method and route | Behavior |
+|---|---|
+| `POST /api/v1/guest-session` | Creates an anonymous session if needed, sets an opaque `HttpOnly; SameSite=Lax` cookie, and returns its expiry (`201` when created, `200` when reused). The cookie is `Secure` in production. The raw token is never returned in JSON or stored in PostgreSQL. Expired sessions without a checkout are cleaned up during initialization. |
+| `GET /api/v1/products` | Lists active seeded products with description, image path, price, currency, and derived available quantity. Before returning, it releases expired I2 reservations in a transaction. |
+| `GET /api/v1/products/{productId}` | Reads one active product; returns `404` if missing or inactive. Also materializes any expired reservations first. |
+| `POST /api/v1/checkouts` | Requires a valid guest cookie and `Idempotency-Key`. Validates one product and quantity, computes server totals, stores the customer/delivery snapshots, and creates the stock hold atomically. First result is `201`; same-key replay is `200`. |
+| `GET /api/v1/checkouts/{checkoutId}` | Reads only a checkout belonging to the current guest session. Returns `404` for an unknown checkout or one owned by another session. Expiration is applied before the response. |
 
-Possible lifecycle endpoints such as explicit cancellation/void and operational reconciliation are not yet frozen. Their semantics must preserve `CANCEL_PENDING` and `UNKNOWN_OUTCOME`; neither endpoint can label an unresolved transaction as failed merely because the caller timed out.
+The initial reservation lasts 600 seconds (10 minutes) by default. I2 has no payment attempts, so an expired reservation is released. Expiration is materialized transactionally before catalog reads, checkout creation, and checkout reads; there is no background scheduler in I2. A replay after expiration returns the same checkout in its current `EXPIRED` state. To create a fresh hold, the client sends a new idempotency key.
 
-## Idempotency behavior
+I2 has no product-write route. Product seed fixtures are installed by migration. Their amounts and inventory are demonstration data, not a business price list.
 
-- Require a fresh high-entropy client command key for checkout creation and each deliberate payment attempt. Scope it to a server-controlled guest/session/customer identity and operation; the identity mechanism is still an open decision.
-- In one PostgreSQL transaction, insert the scoped key/fingerprint and create its resource. A uniqueness race reads and returns the winning resource rather than making a second reservation or provider request.
-- If the same key is repeated with the same canonical business payload, return the original resource/state. If the key is reused with different business input, return `409` without mutation.
-- A locally rejected request that created no resource can be corrected and resubmitted. Once a payment attempt exists, replaying its key only reads that same attempt; if transport proves the request never left the API, an explicit new attempt may be created without counting as a provider-decline retry. If send may have started, return/retrieve `UNKNOWN_OUTCOME` and reconcile first.
-- Never store a raw card number/CVC. The provider card token is transient and must not appear in logs, error bodies, idempotency response bodies, or analytics. Do not persist it in a general outbox. A new deliberate payment attempt needs a new provider reference and newly tokenized card.
-- Use a unique provider reference for correlation, not as proof of provider-side replay safety. A provider duplicate-reference response is surfaced for reconciliation; it is not assumed to contain the original transaction result.
+## I2 checkout request and response
 
-## Example shapes (illustrative only)
+The guest session must be initialized before the first checkout request. The browser sends the cookie with credentials. `Idempotency-Key` accepts 16–128 ASCII letters, digits, periods, underscores, colons, or hyphens; clients should use a cryptographically random value such as `crypto.randomUUID()`.
 
-`POST /api/v1/checkouts` request:
+The local cookie uses `SameSite=Lax`. For the planned CloudFront-to-Fargate cross-site browser deployment, route API calls through the frontend site or configure `SameSite=None; Secure` and verify credentialed CORS/CSRF protections before deployment; I2 does not verify that production browser path.
 
 ```json
 {
-  "productId": "prod_demo_1",
+  "productId": "00000000-0000-4000-8000-000000000001",
   "quantity": 1,
+  "customer": {
+    "fullName": "Example Buyer",
+    "email": "buyer@example.test"
+  },
   "delivery": {
     "recipient": "Example Buyer",
-    "email": "buyer@example.test",
-    "address": "Example address"
-  }
+    "address": "123 Example Street, Apartment 4"
+  },
+  "totalAmountInMinorUnits": 1
 }
 ```
 
-Response contains `checkoutId`, `state`, line items, `baseFee`, `deliveryFee`, `totalAmountInMinorUnits`, `currency`, `reservationExpiresAt`, and a payment eligibility summary. The API rejects unsupported/missing delivery fields and ignores any client-submitted amount.
+The last property is optional and ignored; all accepted amounts come from the server's product snapshot and configured fees. Names/email/address are trimmed; email is lowercased. Validation and PostgreSQL constraints both enforce the size and quantity limits.
 
-`POST /api/v1/checkouts/{checkoutId}/payment-attempts` includes `providerCardToken` and accepted consent token identifiers in the HTTPS request body. These values are redacted before request logging. The response contains `attemptId`, local state, and a status URL; it does not expose the provider's private key or return PAN/CVC.
+The response includes `checkoutId`, `state` (`RESERVED` or `EXPIRED`), customer and delivery snapshots, one item with snapshotted price/name/SKU, `subtotalMinor`, `baseFeeMinor`, `deliveryFeeMinor`, `totalAmountInMinorUnits`, `currency`, and reservation state/expiry. Amounts are non-negative safe integers in COP units.
 
-## API error/status conventions
+The fee variables are `CHECKOUT_BASE_FEE_MINOR` and `CHECKOUT_DELIVERY_FEE_MINOR`; both default to `0` until their demo values are approved. The integration suite sets fixture values explicitly to prove that the API ignores a client-supplied total. `CHECKOUT_RESERVATION_TTL_SECONDS` defaults to `600`, and `GUEST_SESSION_TTL_DAYS` defaults to `30`.
 
-- `400 Bad Request`: malformed or invalid fields.
-- `404 Not Found`: resource not found in the caller's scope.
-- `409 Conflict`: insufficient stock, idempotency-key payload mismatch, or an existing open attempt prevents a new attempt.
-- `202 Accepted`: payment dispatch is pending or its outcome is unknown and must be polled/reconciled.
-- `200 OK`: read/replay of an existing checkout or attempt.
-- Provider decline/error is represented as a persisted domain state, not mislabeled as an HTTP transport failure.
+## Idempotency and transaction boundary
 
-Finalize exact schemas, authentication/session scope, privacy retention, webhook request size limits, and generated OpenAPI in I1–I3 after the user approves the I0 assumptions.
+1. The API hashes the idempotency key and hashes a normalized canonical payload containing product, quantity, customer, and delivery fields.
+2. In one PostgreSQL transaction, it claims the unique session/operation/key hash before touching inventory. The winning request reserves stock with a conditional update, inserts customer/delivery/checkout/item/reservation snapshots, then commits.
+3. A uniqueness race waits for the winning transaction. Matching fingerprint returns the existing checkout without another stock update. A different fingerprint returns `409` without mutation.
+4. If the stock is insufficient or any later write fails, rollback removes the key claim, stock increment, checkout, customer, delivery, and reservation. A rejected request that created no checkout may be retried with corrected input.
+5. GET checkout and idempotency replay require the original guest cookie. Checkout identifiers alone do not grant access.
+
+Database consistency protects each local transition; idempotency makes repeated commands resolve to one stable domain resource. Neither property provides exactly-once execution across a future payment-provider boundary.
+
+## Planned routes for I3
+
+| Method and route | Planned behavior |
+|---|---|
+| `POST /api/v1/checkouts/{checkoutId}/payment-attempts` | Requires a separate idempotency key, a one-time provider card token, current consent evidence, and an eligible live hold. Persist attempt before the provider call, then call outside the SQL transaction. |
+| `GET /api/v1/checkouts/{checkoutId}/payment-attempts/{attemptId}` | Returns safe local status only; replay never starts a second provider POST. |
+| `POST /api/v1/webhooks/payment-events` | Verify signature and transaction identity, persist a minimal receipt, apply an idempotent transition, then acknowledge. |
+
+Explicit cancellation/void, operational reconciliation, and fulfillment endpoints are not frozen. A timeout after a request may have been sent is an unknown outcome: retain the hold and reconcile; do not blind-resend, mark it declined, or release stock. Confirmed approval alone may commit inventory and create fulfillment once.
+
+## I2 HTTP status conventions
+
+- `200 OK`: read or same-command checkout replay.
+- `201 Created`: first successful checkout creation.
+- `400 Bad Request`: malformed body, invalid key syntax, or unsupported fields.
+- `401 Unauthorized`: missing, invalid, or expired guest session.
+- `404 Not Found`: product is absent/inactive, or checkout is not owned by this guest session.
+- `409 Conflict`: insufficient stock or the same idempotency key with a different canonical request.
+- `422 Unprocessable Entity`: a server-calculated amount exceeds the safe integer range.
+- `503 Service Unavailable`: the health readiness check cannot reach PostgreSQL.
+
+I3 payment-provider statuses remain domain states and are not HTTP transport failures. Provider facts and payment recovery behavior remain in [`payment-lifecycle.md`](payment-lifecycle.md) and must be rechecked against sandbox behavior before I3.

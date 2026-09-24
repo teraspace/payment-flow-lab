@@ -2,8 +2,11 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { resolve } from 'node:path';
 import { validateEnvironment } from './config/environment';
+import { CheckoutsModule } from './checkouts/checkouts.module';
 import { DatabaseModule } from './database/database.module';
+import { GuestSessionsModule } from './guest-sessions/guest-sessions.module';
 import { HealthModule } from './health/health.module';
+import { ProductsModule } from './products/products.module';
 
 @Module({
   imports: [
@@ -14,6 +17,9 @@ import { HealthModule } from './health/health.module';
     }),
     DatabaseModule,
     HealthModule,
+    GuestSessionsModule,
+    ProductsModule,
+    CheckoutsModule,
   ],
 })
 export class AppModule {}
