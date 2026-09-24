@@ -9,6 +9,7 @@ describe('validateEnvironment', () => {
     expect(environment).toMatchObject({
       CHECKOUT_BASE_FEE_MINOR: 5_000,
       CHECKOUT_DELIVERY_FEE_MINOR: 8_000,
+      GUEST_SESSION_TTL_DAYS: 30,
     });
   });
 });

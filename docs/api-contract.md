@@ -55,7 +55,7 @@ The last property is optional and ignored; all accepted amounts come from the se
 
 The response includes `checkoutId`, `state` (`RESERVED` or `EXPIRED`), customer and delivery snapshots, one item with snapshotted price/name/SKU, `subtotalMinor`, `baseFeeMinor`, `deliveryFeeMinor`, `totalAmountInMinorUnits`, `currency`, and reservation state/expiry. Amounts are non-negative safe integers in COP units.
 
-The fee variables are `CHECKOUT_BASE_FEE_MINOR` and `CHECKOUT_DELIVERY_FEE_MINOR`; the user approved demo defaults of COP 5,000 base charge and COP 8,000 delivery. These are configurable whole-COP amounts, not taxes or withholding. The integration suite sets the same values explicitly to prove that the API ignores a client-supplied total. `CHECKOUT_RESERVATION_TTL_SECONDS` defaults to `600`, and `GUEST_SESSION_TTL_DAYS` defaults to `30`.
+The fee variables are `CHECKOUT_BASE_FEE_MINOR` and `CHECKOUT_DELIVERY_FEE_MINOR`; the user approved demo defaults of COP 5,000 base charge and COP 8,000 delivery. These are configurable whole-COP amounts, not taxes or withholding. The integration suite sets the same values explicitly to prove that the API ignores a client-supplied total. `CHECKOUT_RESERVATION_TTL_SECONDS` defaults to `600`, and `GUEST_SESSION_TTL_DAYS` defaults to `30` (the user approved this session lifetime on 2026-09-24).
 
 ## Idempotency and transaction boundary
 
