@@ -51,6 +51,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql://postgres@localhost:5432/payment_flow_lab
+      TEST_DATABASE_URL: postgresql://postgres@localhost:5432/payment_flow_lab_test
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -63,6 +64,8 @@ jobs:
         run: npm ci
       - name: Apply database migrations
         run: npm run db:migrate
+      - name: Run API integration tests against PostgreSQL
+        run: npm run test:api
 
   infrastructure:
     name: infrastructure

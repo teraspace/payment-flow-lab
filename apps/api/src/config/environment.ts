@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const environmentSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
   WEB_ORIGIN: z.url().default('http://localhost:5173'),
   DATABASE_URL: z.url().optional(),
@@ -14,6 +15,25 @@ const environmentSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   DATABASE_SSL_CA_FILE: z.string().optional(),
+  CHECKOUT_BASE_FEE_MINOR: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(5_000),
+  CHECKOUT_DELIVERY_FEE_MINOR: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(Number.MAX_SAFE_INTEGER)
+    .default(8_000),
+  CHECKOUT_RESERVATION_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(86_400)
+    .default(600),
+  GUEST_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
 }).superRefine((environment, context) => {
   if (environment.DATABASE_URL) return;
 

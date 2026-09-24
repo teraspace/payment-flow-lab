@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480" role="img" aria-labelledby="title">
+  <title id="title">Cuaderno de puntos ilustrado</title>
+  <rect width="640" height="480" rx="36" fill="#f0e9dd"/>
+  <ellipse cx="325" cy="376" rx="170" ry="24" fill="#d6c7b4"/>
+  <g transform="rotate(-8 320 238)">
+    <rect x="191" y="78" width="250" height="326" rx="22" fill="#314f48"/>
+    <rect x="211" y="89" width="216" height="302" rx="15" fill="#faf7ef"/>
+    <rect x="191" y="78" width="35" height="326" rx="18" fill="#d7a467"/>
+    <path d="M248 153h145M248 184h145M248 215h145M248 246h145M248 277h145M248 308h110" stroke="#b8c8bd" stroke-width="5" stroke-linecap="round" stroke-dasharray="1 15"/>
+    <circle cx="267" cy="128" r="8" fill="#d99a65"/>
+  </g>
+</svg>

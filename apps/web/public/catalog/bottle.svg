@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480" role="img" aria-labelledby="title">
+  <title id="title">Botella térmica ilustrada</title>
+  <rect width="640" height="480" rx="36" fill="#e6f0ee"/>
+  <ellipse cx="322" cy="384" rx="108" ry="21" fill="#c9d9d4"/>
+  <path d="M283 82h78v38l24 24v188c0 24-19 43-43 43h-40c-24 0-43-19-43-43V144l24-24z" fill="#e6a264"/>
+  <path d="M283 82h78v38h-78z" fill="#365f59"/>
+  <path d="M271 186h102v117c0 17-14 31-31 31h-40c-17 0-31-14-31-31z" fill="#f6d4a9"/>
+  <path d="M320 205v94m-22-47h44" stroke="#365f59" stroke-width="8" stroke-linecap="round"/>
+  <path d="M389 167c18 30 18 72 0 103" fill="none" stroke="#fff" stroke-opacity=".52" stroke-width="9" stroke-linecap="round"/>
+</svg>
