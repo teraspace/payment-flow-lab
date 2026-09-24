@@ -8,7 +8,9 @@ export interface ReadinessResponse {
 export const serviceApi = createApi({
   reducerPath: 'serviceApi',
   baseQuery: fetchBaseQuery({
-    baseUrl: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000/api/v1',
+    baseUrl:
+      import.meta.env.VITE_API_BASE_URL ??
+      (import.meta.env.DEV ? 'http://localhost:3000/api/v1' : '/api/v1'),
   }),
   endpoints: (builder) => ({
     getReadiness: builder.query<ReadinessResponse, void>({
