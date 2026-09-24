@@ -1,0 +1,275 @@
+:root {
+  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+  color: #162333;
+  background: #f3f6fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+}
+
+button,
+a {
+  font: inherit;
+}
+
+.page-shell {
+  width: min(1120px, calc(100% - 48px));
+  margin: 0 auto;
+}
+
+.topbar {
+  display: flex;
+  min-height: 92px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e1e8f0;
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.wordmark-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 11px;
+  background: #1b64d8;
+  color: white;
+  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+}
+
+.environment-tag,
+.eyebrow,
+.card-index {
+  color: #607286;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.environment-tag {
+  border: 1px solid #dce5ef;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #fff;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.hero {
+  max-width: 720px;
+  padding: 86px 0 74px;
+}
+
+.eyebrow {
+  margin: 0 0 18px;
+  color: #1b64d8;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1,
+h2 {
+  font-family: 'Avenir Next', 'Segoe UI', sans-serif;
+}
+
+h1 {
+  max-width: 720px;
+  margin-bottom: 20px;
+  font-size: clamp(2.4rem, 6vw, 4.35rem);
+  letter-spacing: -0.055em;
+  line-height: 1.08;
+}
+
+.hero-copy {
+  max-width: 570px;
+  margin-bottom: 32px;
+  color: #607286;
+  font-size: 1.08rem;
+  line-height: 1.7;
+}
+
+.status-card {
+  display: flex;
+  width: min(100%, 390px);
+  min-height: 76px;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid #dde6ef;
+  border-radius: 15px;
+  padding: 14px 17px;
+  background: #fff;
+  box-shadow: 0 8px 28px rgb(23 47 77 / 5%);
+}
+
+.status-card--ready .status-indicator {
+  background: #16a36b;
+  box-shadow: 0 0 0 5px #e4f7ef;
+}
+
+.status-card--waiting .status-indicator {
+  background: #e5a22b;
+  box-shadow: 0 0 0 5px #fff4dc;
+}
+
+.status-indicator {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.status-label,
+.status-value {
+  margin: 0;
+}
+
+.status-label {
+  margin-bottom: 3px;
+  color: #728398;
+  font-size: 0.78rem;
+}
+
+.status-value {
+  font-weight: 700;
+}
+
+.text-button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: #1b64d8;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.text-button:focus-visible,
+.wordmark:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid #84b2ff;
+  outline-offset: 4px;
+}
+
+.foundation-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.foundation-card {
+  min-height: 190px;
+  border: 1px solid #e1e8f0;
+  border-radius: 17px;
+  padding: 24px;
+  background: rgb(255 255 255 / 78%);
+}
+
+.card-index {
+  display: block;
+  margin-bottom: 23px;
+  color: #1b64d8;
+}
+
+.foundation-card h2 {
+  margin-bottom: 9px;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.foundation-card p {
+  margin-bottom: 0;
+  color: #66798c;
+  font-size: 0.93rem;
+  line-height: 1.6;
+}
+
+.page-footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 30px 0 38px;
+  color: #8291a2;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 720px) {
+  .page-shell {
+    width: min(100% - 36px, 540px);
+  }
+
+  .topbar {
+    min-height: 76px;
+  }
+
+  .hero {
+    padding: 64px 0 52px;
+  }
+
+  .foundation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .foundation-card {
+    min-height: auto;
+  }
+
+  .card-index {
+    margin-bottom: 18px;
+  }
+}
+
+@media (max-width: 420px) {
+  .wordmark {
+    gap: 8px;
+    font-size: 0.9rem;
+  }
+
+  .environment-tag {
+    padding: 7px 9px;
+    font-size: 0.64rem;
+  }
+
+  .hero {
+    padding-top: 48px;
+  }
+
+  .page-footer {
+    gap: 12px;
+    font-size: 0.73rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
