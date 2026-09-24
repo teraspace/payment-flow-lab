@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Repository scaffold and initial engineering decisions are in place. Application code, cloud resources, and external publication have not started.
+Iteration 0 scope and lifecycle proposals are approved. The public GitHub repository is created and `main` is protected; application code, CI, and cloud resources have not started. The approved [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [remaining open decisions](docs/open-decisions.md) define the baseline for I1.
 
 ## Engineering rules
 
@@ -27,15 +27,15 @@ Repository scaffold and initial engineering decisions are in place. Application 
 - Never put secrets or challenge credentials in source control.
 - Keep payment, reservation, and fulfillment lifecycles independently observable.
 
-See [the engineering baseline](docs/engineering-baseline.md), [the iteration plan](docs/iteration-plan.md), and [the agent workflow](AGENTS.md).
+See [the engineering baseline](docs/engineering-baseline.md), [the iteration plan](docs/iteration-plan.md), [the feature branch/PR workflow](docs/git-workflow.md), and [the agent workflow](AGENTS.md).
 
 ## Local setup
 
 The toolchain and application commands will be added in the first implementation iteration. Do not copy real credentials into `.env.example`; use a local `.env` file, which is ignored by Git.
 
-## AI-assisted workflow
+## Feature progress and AI-assisted workflow
 
-AI agents may help with discovery, implementation, testing, and review. Each iteration ends with recorded evidence and a human validation gate. The workflow ledger will record the actual agents, changes, test results, interventions, and defects; it will not claim reviews or checks that did not happen.
+The challenge asks for branches and pull requests by feature and warns against a repository with no visible progress or commits. Work therefore lands as meaningful commits on neutral feature branches, with a reviewable PR for each independent feature. Commits are not counted as iterations, and agents do not get separate PRs just because their roles differ. The target GitHub repository must be public; hosted progress should be visible incrementally after the public-repository gate. Each iteration ends with recorded evidence and a human validation gate. The ledger records actual agents, changes, test results, interventions, and defects; it does not claim checks that did not happen.
 
 ## Delivery scorecard
 
