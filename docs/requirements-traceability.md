@@ -49,8 +49,8 @@ These are integration facts to recheck immediately before I3 because provider co
 
 ## I0 approval checklist
 
-- [ ] Approve the requirements traceability and the selected React/NestJS/PostgreSQL/Fargate/Terraform direction.
-- [ ] Approve the proposed payment, inventory, timeout, retry, cancellation, and late-approval lifecycle in `payment-lifecycle.md`, or identify edits.
-- [ ] Resolve or explicitly accept the provisional policies listed in `open-decisions.md`.
-- [ ] Review the exact neutral tree and commit history before public publication.
-- [ ] Only after these decisions, publish the public repository, protect `main`, and begin I1.
+- [x] User approved the requirements traceability and selected React/NestJS/PostgreSQL/Fargate/Terraform direction on 2026-09-24.
+- [x] User approved the proposed payment, inventory, timeout, retry, cancellation, and late-approval lifecycle in `payment-lifecycle.md` on 2026-09-24.
+- [x] User accepted the provisional policies in `open-decisions.md` as the initial implementation baseline; remaining data/operational details stay open.
+- [x] Reviewed the exact neutral tree and commit history before public publication; scans found no prohibited names or credentials.
+- [x] Created the public repository and protected `main` with PR-only updates, no force-push, and no branch deletion. CI checks will be configured when CI exists in I1.

@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Iteration 0 planning artifacts are prepared for user validation: [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [open decisions](docs/open-decisions.md). Application code and cloud resources have not started. The public GitHub remote and `main` protection are still an I0 publication gate.
+Iteration 0 scope and lifecycle proposals are approved. The public GitHub repository is created and `main` is protected; application code, CI, and cloud resources have not started. The approved [requirements and scorecard](docs/requirements-traceability.md), [initial API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [remaining open decisions](docs/open-decisions.md) define the baseline for I1.
 
 ## Engineering rules
 
