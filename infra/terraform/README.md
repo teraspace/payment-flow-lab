@@ -37,11 +37,11 @@ Then from this directory:
 
 ```sh
 ../../scripts/terraform-aws.sh init
-../../scripts/terraform-aws.sh plan -out=tfplan
+../../scripts/terraform-aws.sh plan -var='service_desired_count=0' -out=tfplan
 ../../scripts/terraform-aws.sh show tfplan
 ```
 
-The default plan creates the infrastructure and registers ECS task definitions, but leaves the API service at `desired_count = 0`. This lets the ECR repository be created before the image is pushed. After the reviewed infrastructure apply, publish the API image, run the database migration as a one-off Fargate task, and review a second plan to change `desired_count` to `1`. The API task is not serving traffic before that final step.
+The initial bootstrap plan must explicitly set `service_desired_count = 0`. This creates the infrastructure and registers ECS task definitions before the image is pushed, without starting the API task. The default is `1` so future plans preserve the deployed steady state. After the bootstrap apply, publish the API image, run the database migration as a one-off Fargate task, and create the final plan:
 
 **Do not apply until the plan, region, public exposure, AWS account plan, and expected monthly cost have been reviewed.** A plan is not a cost estimate; use the estimate below as a preflight and refresh it if resource sizes, region, or traffic assumptions change.
 
@@ -93,7 +93,7 @@ The gross estimate does not subtract account-specific Free Tier offers. AWS curr
 
    ```sh
    ../../scripts/terraform-aws.sh plan \
-     -var='api_image_tag=i1-bootstrap' -var='service_desired_count=1' -out=tfplan
+     -var='api_image_tag=i1-bootstrap' -out=tfplan
    ../../scripts/terraform-aws.sh show tfplan
    ../../scripts/terraform-aws.sh apply tfplan
    ```
