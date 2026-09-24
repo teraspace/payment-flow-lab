@@ -90,7 +90,9 @@ resource "aws_cloudfront_distribution" "app" {
 
   viewer_certificate {
     cloudfront_default_certificate = true
-    minimum_protocol_version       = "TLSv1.2_2021"
+    # CloudFront fixes the security policy to TLSv1 for the default cloudfront.net certificate.
+    # Enforcing TLS 1.2 requires an alternate domain name and a custom certificate.
+    minimum_protocol_version = "TLSv1"
   }
 
   depends_on = [
