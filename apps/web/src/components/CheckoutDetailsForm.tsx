@@ -148,7 +148,7 @@ export function CheckoutDetailsForm({
       <aside className="checkout-aside" aria-label="Producto seleccionado">
         <div className="aside-label">Tu selección</div>
         <div className="selected-product-art">
-          <img src={product.imageUrl} alt="" />
+          <img src={product.imageUrl} alt="" height="145" width="200" />
         </div>
         <p className="selected-sku">{product.sku}</p>
         <h2>{product.name}</h2>

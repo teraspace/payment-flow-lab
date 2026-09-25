@@ -44,12 +44,12 @@ Still open for later refinement: a user-facing cancellation control. The user va
 - Session initialization is `POST` because it can create a database row. Expired sessions without checkouts are deleted during initialization; checkout sessions remain for foreign-key history while personal fields and the request fingerprint are redacted 30 days after checkout creation.
 - The user approved COP 5,000 base and COP 8,000 delivery as demo charges on 2026-09-24; they are now the runtime defaults. The API still calculates the final amount from catalog price plus configured charges.
 - The user approved redaction of customer name/email, delivery recipient/address, and the PII-derived request fingerprint 30 days after checkout creation on 2026-09-24. A five-minute scheduler uses PostgreSQL transactions and locked batches; it preserves non-PII checkout and inventory history. This policy was implemented before I2 deployment.
-- Terraform routes `/api/*` through the frontend's CloudFront host, so the Lax cookie remains same-site. The browser checkout path still needs verification in I4/I6.
+- Terraform routes `/api/*` through the frontend's CloudFront host, so the Lax cookie remains same-site. The deployed browser/API path returned successful page, readiness, catalog, and docs responses on 2026-09-25; I5 adds repeatable quality measurements.
 
 ## I2 user decision record
 
 On 2026-09-24, the user approved redacting customer name/email and delivery recipient/address 30 days after each checkout is created. The implementation also clears the canonical request fingerprint derived from those values so the retained idempotency row does not keep a reusable PII digest. Checkout totals, product snapshots, reservation history, idempotency key hashes, and checkout/session relationships remain for demo history and replay protection. The same-key replay returns `410 Gone` after its fingerprint is erased; the guest starts a new session and command instead.
 
-## I3 implementation record pending user validation
+## I3 implementation record — approved
 
-The I3 branch implements the approved timeout, retry, inventory, and fulfillment baseline. The user validated the challenge-demo defaults of a 1,800-second manual-review threshold and 365-day minimal event-receipt retention on 2026-09-24; neither is represented as a provider requirement. Controlled provider-contract tests run against PostgreSQL and a deterministic adapter double; no live sandbox keys or real charge were used.
+I3 merged as PR #10 and was deployed. The user validated the challenge-demo defaults of a 1,800-second manual-review threshold and 365-day minimal event-receipt retention on 2026-09-24; neither is represented as a provider requirement. Controlled provider-contract tests run against PostgreSQL and a deterministic adapter double; no live sandbox keys or real charge were used for that verification.

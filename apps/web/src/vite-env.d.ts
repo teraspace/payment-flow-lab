@@ -8,3 +8,7 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+declare global {
+  var __VITE_ENV__: ImportMetaEnv & { DEV: boolean };
+}

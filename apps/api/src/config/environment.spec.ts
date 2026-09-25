@@ -46,4 +46,19 @@ describe('validateEnvironment', () => {
 
     expect(environment.PAYMENT_UNRESOLVED_REVIEW_THRESHOLD_SECONDS).toBe(0);
   });
+
+  it('accepts complete discrete database connection settings without DATABASE_URL', () => {
+    const environment = validateEnvironment({
+      DATABASE_HOST: 'localhost',
+      DATABASE_NAME: 'payment_flow_lab',
+      DATABASE_USER: 'postgres',
+      DATABASE_PASSWORD: 'local-only',
+    });
+    expect(environment.DATABASE_HOST).toBe('localhost');
+  });
+
+  it('rejects partial discrete database connection settings', () => {
+    expect(() => validateEnvironment({ DATABASE_HOST: 'localhost', DATABASE_NAME: 'payment_flow_lab' }))
+      .toThrow(/Set DATABASE_URL or provide/);
+  });
 });

@@ -79,10 +79,10 @@ The docs require unique transaction references but do not describe that field as
 
 On 2026-09-25, the local sandbox smoke verified the lifecycle end to end. The declined test card produced `DECLINED`; the one allowed retry using the approved test card on that checkout became `UNKNOWN_OUTCOME` with no provider transaction ID. That checkout remains `UNKNOWN_OUTCOME`, its canvas-tote reservation remains `HELD`, and no third attempt was sent. A separate synthetic notebook checkout using the approved test card reached `APPROVED`/`PAID`; PostgreSQL shows the reservation `COMMITTED`, stock decremented once, and fulfillment `READY`. The test credentials were supplied only through the local process environment. The browser encrypted test-card fields before the API relay; no real card or real charge was used.
 
-## I3 implementation defaults awaiting user validation
+## I3 implementation defaults approved by the user
 
 - An unresolved payment older than 1,800 seconds is flagged for manual review by default. Set the threshold to `0` to disable automatic escalation. The flag is visible to the owning guest; it neither releases stock nor authorizes another charge. An operator reconciles using the persisted provider reference/transaction ID and the payment dashboard. I3 has no admin UI.
 - Minimal event receipts are retained for 365 days by default, then deleted in batches. They contain only fingerprint, attempt link, transaction ID/reference, status, amount/currency, event/received times, and disposition; no full event body or card data is stored.
-- Both defaults are configurable through `PAYMENT_UNRESOLVED_REVIEW_THRESHOLD_SECONDS` and `PAYMENT_EVENT_RECEIPT_RETENTION_DAYS`. They remain provisional until the user validates the I3 PR.
+- Both defaults are configurable through `PAYMENT_UNRESOLVED_REVIEW_THRESHOLD_SECONDS` and `PAYMENT_EVENT_RECEIPT_RETENTION_DAYS`. The user approved them for this sandbox demo on 2026-09-24; they are not provider requirements.
 
 The 10-minute initial hold and single explicit retry after confirmed decline/error remain the user-approved baseline. If transport evidence cannot prove the request stayed local, use `UNKNOWN_OUTCOME`, not `FAILED_LOCAL`.

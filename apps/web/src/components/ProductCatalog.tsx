@@ -4,6 +4,7 @@ import type { Product } from '../app/service-api';
 interface ProductCatalogProps {
   products: Product[];
   isLoading: boolean;
+  loadingLabel?: string;
   error?: string;
   onRetry: () => void;
   onSelect: (product: Product) => void;
@@ -12,6 +13,7 @@ interface ProductCatalogProps {
 export function ProductCatalog({
   products,
   isLoading,
+  loadingLabel = 'Cargando productos',
   error,
   onRetry,
   onSelect,
@@ -27,9 +29,24 @@ export function ProductCatalog({
       </div>
 
       {isLoading ? (
-        <div className="empty-state" role="status" aria-live="polite">
-          <span className="loading-mark" aria-hidden="true" />
-          <p>Cargando productos…</p>
+        <div aria-label={loadingLabel} className="catalog-loading" role="status" aria-live="polite">
+          <div aria-hidden="true" className="product-grid">
+            {Array.from({ length: 3 }, (_, index) => (
+              <article className="product-card product-card--skeleton" key={index}>
+                <div className={`product-art product-art--${index} product-art--skeleton`} />
+                <div className="product-copy product-copy--skeleton">
+                  <span className="skeleton-shape skeleton-meta" />
+                  <span className="skeleton-shape skeleton-title" />
+                  <span className="skeleton-shape skeleton-description" />
+                  <span className="skeleton-shape skeleton-description skeleton-description--short" />
+                  <div className="skeleton-footer">
+                    <span className="skeleton-shape skeleton-price" />
+                    <span className="skeleton-shape skeleton-action" />
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
         </div>
       ) : error ? (
         <div className="message-card message-card--error" role="alert">
@@ -50,7 +67,7 @@ export function ProductCatalog({
           {products.map((product, index) => (
             <article className="product-card" key={product.id}>
               <div className={`product-art product-art--${index % 3}`}>
-                <img src={product.imageUrl} alt={product.name} loading="lazy" />
+                <img src={product.imageUrl} alt={product.name} height="164" loading="lazy" width="240" />
                 <span className="product-stock">
                   {product.availableQuantity > 0
                     ? `${product.availableQuantity} disponibles`

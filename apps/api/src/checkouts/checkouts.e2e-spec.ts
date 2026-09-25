@@ -81,6 +81,10 @@ describe('checkout API (PostgreSQL)', () => {
     await database.query(`
       DROP TRIGGER IF EXISTS fail_test_reservation_insert ON reservations;
       DROP FUNCTION IF EXISTS fail_test_reservation_insert();
+      DROP TRIGGER IF EXISTS suppress_test_insert ON customers;
+      DROP TRIGGER IF EXISTS suppress_test_insert ON deliveries;
+      DROP TRIGGER IF EXISTS suppress_test_insert ON checkouts;
+      DROP FUNCTION IF EXISTS suppress_test_checkout_insert();
       TRUNCATE payment_event_receipts, fulfillments, payment_attempts,
                idempotency_records, reservations, checkout_items, checkouts,
                deliveries, customers, guest_sessions;
@@ -244,6 +248,107 @@ describe('checkout API (PostgreSQL)', () => {
       idempotency_count: '1',
     });
   });
+
+  it('rejects missing or malformed checkout command keys and handles missing recovery records', async () => {
+    const productId = await getProductId(productSkus.notebook);
+    await request(app.getHttpServer())
+      .post('/api/v1/checkouts')
+      .set('Cookie', cookie)
+      .send(checkoutPayload(productId))
+      .expect(400);
+    await postCheckout(cookie, 'short', checkoutPayload(productId)).expect(400);
+    await request(app.getHttpServer())
+      .post('/api/v1/checkouts/recover')
+      .set('Cookie', cookie)
+      .set('Idempotency-Key', 'missing-recovery-command-001')
+      .expect(404);
+    await request(app.getHttpServer())
+      .post('/api/v1/checkouts/recover')
+      .set('Cookie', cookie)
+      .set('Idempotency-Key', 'short')
+      .expect(400);
+
+    const counts = await database.query<{ count: string }>('SELECT count(*)::text AS count FROM checkouts');
+    expect(counts.rows[0]?.count).toBe('0');
+  });
+
+  it('returns not found when the product identifier has no active catalog row', async () => {
+    await postCheckout(
+      cookie,
+      'checkout-product-missing-001',
+      checkoutPayload('d7e3a5b1-1778-44c7-8bf4-cde6fbf317a1'),
+    ).expect(404);
+    const counts = await database.query<{ count: string }>('SELECT count(*)::text AS count FROM idempotency_records');
+    expect(counts.rows[0]?.count).toBe('0');
+  });
+
+  it('rejects totals outside the JavaScript safe-integer range and rolls back the reservation', async () => {
+    const productId = await getProductId(productSkus.notebook);
+    await database.query(
+      "UPDATE products SET price_minor = 9007199254740991 WHERE sku = 'desk-notebook'",
+    );
+
+    await postCheckout(cookie, 'checkout-safe-range-overflow-001', checkoutPayload(productId)).expect(422);
+    const state = await database.query<{ checkouts: string; idempotency_records: string; reserved_quantity: number }>(`
+      SELECT (SELECT count(*)::text FROM checkouts) AS checkouts,
+             (SELECT count(*)::text FROM idempotency_records) AS idempotency_records,
+             reserved_quantity
+      FROM products WHERE sku = 'desk-notebook'
+    `);
+    expect(state.rows[0]).toEqual({ checkouts: '0', idempotency_records: '0', reserved_quantity: 0 });
+  });
+
+  it.each(['customers', 'deliveries', 'checkouts'])(
+    'rolls back all checkout state when the %s snapshot insert returns no row',
+    async (table) => {
+      const productId = await getProductId(productSkus.notebook);
+      await database.query(`
+        CREATE FUNCTION suppress_test_checkout_insert()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          RETURN NULL;
+        END;
+        $$;
+        CREATE TRIGGER suppress_test_insert BEFORE INSERT ON ${table}
+          FOR EACH ROW EXECUTE FUNCTION suppress_test_checkout_insert();
+      `);
+
+      try {
+        await postCheckout(
+          cookie,
+          `checkout-${table}-insert-suppressed-001`,
+          checkoutPayload(productId),
+        ).expect(500);
+      } finally {
+        await database.query(`
+          DROP TRIGGER IF EXISTS suppress_test_insert ON ${table};
+          DROP FUNCTION IF EXISTS suppress_test_checkout_insert();
+        `);
+      }
+
+      const state = await database.query<{
+        checkouts: string;
+        customers: string;
+        deliveries: string;
+        idempotency_records: string;
+        reserved_quantity: number;
+      }>(`
+        SELECT (SELECT count(*)::text FROM checkouts) AS checkouts,
+               (SELECT count(*)::text FROM customers) AS customers,
+               (SELECT count(*)::text FROM deliveries) AS deliveries,
+               (SELECT count(*)::text FROM idempotency_records) AS idempotency_records,
+               reserved_quantity
+        FROM products WHERE sku = 'desk-notebook'
+      `);
+      expect(state.rows[0]).toEqual({
+        checkouts: '0',
+        customers: '0',
+        deliveries: '0',
+        idempotency_records: '0',
+        reserved_quantity: 0,
+      });
+    },
+  );
 
   it('redacts checkout PII and its request fingerprint after 30 days without deleting history', async () => {
     const productId = await getProductId(productSkus.notebook);

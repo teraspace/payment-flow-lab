@@ -40,7 +40,7 @@ export function CheckoutSummary({ checkout }: CheckoutSummaryProps) {
 
       <div className="summary-item">
         <div className="summary-item-art">
-          <img src={PRODUCT_IMAGES[checkout.item.sku] ?? '/catalog/notebook.svg'} alt="" />
+          <img src={PRODUCT_IMAGES[checkout.item.sku] ?? '/catalog/notebook.svg'} alt="" height="44" width="44" />
         </div>
         <div className="summary-item-copy">
           <span>{checkout.item.sku}</span>
