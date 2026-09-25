@@ -33,7 +33,33 @@ The six base categories add to 100 points. Code presence alone does not earn ver
 | Working deployed application | 20 | Connected public frontend/API with deployment and smoke evidence. | I6–I7 |
 | **Base total** | **100** |  |  |
 
-The additional 50 points are bonus categories, not part of the 100-point base: clear code structure (10), design (10), security (10), UX (10), and extra features (10). Treat bonuses as stretch goals after the base flow is accepted and working.
+The six bonus categories add 50 points beyond the 100-point base. Their evidence is separate from the required checkout and deployment acceptance:
+
+| Bonus category | Points | Evidence target |
+|---|---:|---|
+| OWASP alignment, HTTPS, and security headers | 5 | Input/session/payment safeguards and live response headers for the frontend and API. |
+| Responsive app across browsers | 5 | Mobile and desktop viewport checks in more than one browser engine. |
+| CSS skills | 10 | Responsive layout, visual finish, and maintainable styling. |
+| Clean code | 10 | Clear modules, types, lint, and understandable tests. |
+| Hexagonal architecture with ports and adapters | 10 | Explicit boundaries for the provider and persistence dependencies; document partial adoption. |
+| Railway-oriented programming | 10 | Typed success/error composition in use cases, rollback on expected failures, and HTTP mapping at the edge. |
+| **Bonus total** | **50** | |
+
+## Current delivery status (I10 review branch)
+
+This records implementation and observed evidence, not an evaluator's score. The I10 changes below are local until the feature PR is merged and the reviewed AWS update is applied.
+
+| Brief area | Current state | Evidence and limit |
+|---|---|---|
+| Catalog, five-step checkout, card/delivery modal, summary backdrop, payment result, and updated stock | Implemented in I2–I8 | Browser, API, and PostgreSQL sandbox walkthroughs reached approved and declined outcomes. The I9 deployment smoke did not submit another payment; repeat live end-to-end acceptance remains open. |
+| React/Redux SPA, mobile layouts, and Grid/Flex CSS | Implemented | I10's production build and proposed CSP passed catalog, image, modal-boundary, keyboard, and console checks in Chrome, Firefox, and WebKit at 375 × 667, 667 × 375, and 1280 × 800 CSS pixels. Physical-device behavior remains unmeasured. |
+| NestJS/TypeScript API, PostgreSQL seed, OpenAPI, and README data model | Implemented and deployed | Public health/readiness/catalog/docs smoke checks passed after I9; the README contains the ER diagram and lifecycle details. |
+| Browser recovery, local DB consistency, domain idempotency, and provider outcomes | Implemented | Integration tests cover reservations, replays, state transitions, signed events, and unknown-outcome handling. A remote timeout does not prove payment success or failure. |
+| Jest coverage above 80% in both applications | Measured locally on I10 | Web: 8 suites/77 tests, 89.58% statements and 84.06% branches. API: 10 suites/88 tests, 90.00% statements and 82.14% branches. Payments-module branches remain at 79.40%; the official score is unknown. |
+| Public GitHub, incremental PRs, README, and connected AWS deployment | Delivered through I9 | The current public API is I9. CloudFront still serves I8 frontend assets; merged PR #19's visual correction and I10's frontend/security changes require a separate reviewed deployment. |
+| Optional security, browser, CSS, clean-code, hexagonal, and ROP criteria | Partly evidenced | I10 adds a proposed static security-header policy and local cross-browser checks. The API already uses HTTPS and Helmet. The provider port exists; database access is still directly coupled in some use cases, so full hexagonal adoption is not claimed. ROP is applied to the two critical write use cases. |
+
+The brief's sandbox-only, no-real-card, neutral public repository, and AI-assisted development conditions are followed. Direct sharing with other candidates and the evaluator's eventual points cannot be established from code or local tests.
 
 ## Architecture interpretation
 
