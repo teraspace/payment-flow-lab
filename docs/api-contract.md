@@ -37,7 +37,7 @@ I2 has no product-write route. Product seed fixtures are installed by migration.
 
 The guest session must be initialized before the first checkout request. The browser sends the cookie with credentials. `Idempotency-Key` accepts 16–128 ASCII letters, digits, periods, underscores, colons, or hyphens; clients should use a cryptographically random value such as `crypto.randomUUID()`.
 
-The cookie uses `SameSite=Lax`. Terraform routes `/api/*` through the same CloudFront hostname as the frontend, so browser calls stay same-site. The full browser checkout path remains to be verified in I4/I6.
+The cookie uses `SameSite=Lax`. Terraform routes `/api/*` through the same CloudFront hostname as the frontend, so browser calls stay same-site. The deployed CloudFront path and API readiness were smoke-checked after I4/I6 on 2026-09-25; I5 records accessibility and performance measurements.
 
 ```json
 {
@@ -91,9 +91,9 @@ The public API and local catalog use whole COP values (`42,000` means COP 42,000
 
 Provider transport failure, timeout, 5xx, malformed create response, or an ambiguous non-2xx response becomes `UNKNOWN_OUTCOME`. The configured adapter treats explicit `400`/`401` rejection as `REJECTED_NO_TRANSACTION`: it stores the HTTP status, returns the checkout to `RESERVED`, and does not count the response as a provider charge attempt. It keeps other responses conservative because a duplicate-reference response cannot prove whether a prior attempt succeeded. Unknown attempts retain stock and block another attempt. The API never retries the provider POST automatically.
 
-The background reconciler claims due attempts under a short PostgreSQL lease, closes that transaction, and then performs provider status lookups by known provider transaction ID. A crashed `DISPATCHING` attempt is eligible to become unknown after 20 seconds and is marked on the next 30-second reconciliation pass. If an unresolved attempt reaches the configured manual-review threshold (default 1,800 seconds), the API sets `manualReviewRequired`; neither the flag nor a failed lookup releases stock or permits a new charge. Set the threshold to `0` to disable automatic escalation. The default remains provisional pending user validation.
+The background reconciler claims due attempts under a short PostgreSQL lease, closes that transaction, and then performs provider status lookups by known provider transaction ID. A crashed `DISPATCHING` attempt is eligible to become unknown after 20 seconds and is marked on the next 30-second reconciliation pass. If an unresolved attempt reaches the configured manual-review threshold (default 1,800 seconds), the API sets `manualReviewRequired`; neither the flag nor a failed lookup releases stock or permits a new charge. Set the threshold to `0` to disable automatic escalation. The user approved this demo default on 2026-09-24; it is configurable and is not a provider requirement.
 
-The minimal event-receipt cleanup defaults to 365 days and can be changed through `PAYMENT_EVENT_RECEIPT_RETENTION_DAYS`; this is a provisional demo default pending user validation. The full signed event body is not stored. `PAYMENT_GATEWAY_EVENTS_SECRET` and `PAYMENT_GATEWAY_INTEGRITY_SECRET` are distinct from the private API key and must remain server-side.
+The minimal event-receipt cleanup defaults to 365 days and can be changed through `PAYMENT_EVENT_RECEIPT_RETENTION_DAYS`; the user approved this demo default on 2026-09-24. The full signed event body is not stored. `PAYMENT_GATEWAY_EVENTS_SECRET` and `PAYMENT_GATEWAY_INTEGRITY_SECRET` are distinct from the private API key and must remain server-side.
 
 I3 does not expose a user-facing cancellation/void command or refund route. A confirmed provider `VOIDED` status closes the checkout and releases a held reservation. Refund is a separate operation outside this iteration.
 
@@ -105,7 +105,7 @@ The browser UI requires `VITE_PAYMENT_GATEWAY_ENVIRONMENT=test`. Provider URL an
 
 After refresh, the browser restores only the checkout ID from the URL and recovers the guest-owned checkout from the API. A payment recovery marker stores only checkout ID scope and timestamp; while the outcome is unresolved, the UI blocks a second submission and polls the API while visible. An API lookup error also keeps payment submission blocked until the existing attempt can be checked. The checkout command key is stored in session storage so an interrupted checkout can be recovered without persisting its customer/address payload.
 
-I4 does not enable live processing and has not been deployed. The application supports only sandbox test-card numbers and test-prefixed tokens; provider configuration remains server-side and is blank in the committed environment example.
+I4 does not enable live processing. The sandbox-only checkout is deployed; the application supports only sandbox test-card numbers and test-prefixed tokens, while provider configuration remains server-side and blank in the committed environment example.
 
 Explicit cancellation/void, operational reconciliation, and fulfillment endpoints are not frozen. A timeout after a request may have been sent is an unknown outcome: retain the hold and reconcile; do not blind-resend, mark it declined, or release stock. Confirmed approval alone may commit inventory and create fulfillment once.
 

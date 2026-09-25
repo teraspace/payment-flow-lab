@@ -243,8 +243,8 @@ export function App() {
 
         <CheckoutProgress activeStep={activeStep} />
 
-        {!sessionReady ? (
-          <div className="large-message" role={sessionInitialization.isError ? 'alert' : 'status'} aria-live="polite">
+        {!sessionReady && sessionInitialization.isError ? (
+          <div className="large-message" role="alert" aria-live="polite">
             <span className="loading-mark" aria-hidden="true" />
             <div>
               <strong>{sessionInitialization.isError ? 'No pudimos iniciar la sesión.' : 'Preparando tu checkout…'}</strong>
@@ -260,6 +260,14 @@ export function App() {
               ) : null}
             </div>
           </div>
+        ) : !sessionReady ? (
+          <ProductCatalog
+            isLoading
+            loadingLabel="Iniciando sesión segura"
+            onRetry={() => void productsQuery.refetch()}
+            onSelect={() => undefined}
+            products={[]}
+          />
         ) : routeIsInvalid ? (
           <div className="large-message message-card--error" role="alert">
             <div>

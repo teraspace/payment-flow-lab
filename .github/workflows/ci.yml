@@ -31,6 +31,8 @@ jobs:
         run: npm run typecheck
       - name: Build
         run: npm run build
+      - name: Run frontend tests with coverage thresholds
+        run: npm run test:coverage --workspace @payment-flow-lab/web
 
   database-migrations:
     name: database-migrations
@@ -64,8 +66,8 @@ jobs:
         run: npm ci
       - name: Apply database migrations
         run: npm run db:migrate
-      - name: Run API integration tests against PostgreSQL
-        run: npm run test:api
+      - name: Run API integration tests with coverage thresholds against PostgreSQL
+        run: npm run test:api -- --coverage
 
   infrastructure:
     name: infrastructure

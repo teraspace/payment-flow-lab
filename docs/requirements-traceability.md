@@ -29,7 +29,7 @@ The six base categories add to 100 points. Code presence alone does not earn ver
 | UI, images, and responsiveness without overflow | 5 | Product assets and measured mobile/desktop layouts. | I4–I5 |
 | Complete checkout flow | 20 | End-to-end product, delivery/card, summary, payment status, refresh recovery, and updated stock. | I2–I5 |
 | API | 20 | Documented NestJS API with persisted state, validation, inventory rules, and payment lifecycle. | I1–I3, I5 |
-| Test coverage | 30 | CI-generated coverage above 80%, plus critical lifecycle/concurrency evidence. | I1–I5 |
+| Test coverage | 30 | CI-generated coverage above 80%, plus critical lifecycle/concurrency evidence. Current per-app evidence and module-level exceptions are in the [I5 scorecard](reliability-scorecard.md). | I1–I5 |
 | Working deployed application | 20 | Connected public frontend/API with deployment and smoke evidence. | I6–I7 |
 | **Base total** | **100** |  |  |
 
@@ -60,7 +60,7 @@ I3 verifies these contract details with unit tests and a deterministic provider 
 - The API exposes seeded product list/detail reads, including description, local image path, price, and derived available quantity. The product page/browser journey is still assigned to I4.
 - Checkout creation snapshots the product and fees, reserves stock conditionally, scopes replays to a server-issued anonymous session, and writes checkout, reservation, and idempotency rows in one PostgreSQL transaction. Payment attempts and provider requests remain out of I2.
 - Fourteen Jest cases passed against real PostgreSQL connections, including final-unit contention, concurrent same-key replay, cross-session isolation, payload conflict, failed-stock retry, reservation expiry, price snapshot, rollback after an injected intermediate database error, idempotent session reuse, cleanup of expired sessions without checkouts, approved fee defaults, and 30-day redaction of customer/delivery PII plus the PII-derived request fingerprint. All migrations applied and rolled back in the isolated test database.
-- Measured API coverage for this I2 suite: 90.18% statements, 91.40% lines, 85.18% functions, and 63.51% branches. Branch coverage is below the internal 81% target and remains a reliability/scorecard item for I5; no 30-point test score is claimed now.
+- Historical I2-only API coverage: 90.18% statements, 91.40% lines, 85.18% functions, and 63.51% branches. Current full-app coverage, CI gates, payment-service branch results, and scoring caveats are recorded in the [I5 scorecard](reliability-scorecard.md); no rubric points are inferred from test coverage alone.
 - Review fixes make session initialization a POST, safely reject seeded-SKU conflicts instead of risking deletion of an unowned row on rollback, and clean up expired guest sessions that do not own checkouts. The CloudFront same-origin flow set and used the secure guest cookie successfully.
 - The user approved the demo charges, 30-day guest-session lifetime, and 30-day PII redaction period from checkout creation. The implementation clears the PII-derived idempotency fingerprint too.
 - PR #8 merged as `5626a44`. Hosted `quality`, `database-migrations`, and `infrastructure` checks passed. The ARM64 API image was deployed to Fargate after migration exit code `0`; ECS stabilized at 1/1, and the final Terraform plan reports no changes.

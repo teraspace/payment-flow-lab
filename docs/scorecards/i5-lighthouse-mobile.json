@@ -1,0 +1,38 @@
+{
+  "iteration": "I5",
+  "measuredAt": "2026-09-25",
+  "target": "http://localhost:4173/",
+  "build": "optimized local Vite production build; API connected to local PostgreSQL through port 3001",
+  "tool": {
+    "name": "Lighthouse",
+    "version": "13.5.0",
+    "browser": "HeadlessChrome 154.0.0.0",
+    "formFactor": "mobile",
+    "viewport": { "width": 412, "height": 823, "deviceScaleFactor": 1.75 },
+    "emulation": {
+      "deviceProfile": "Moto G Power (2022), Android 11 user agent",
+      "cpuSlowdownMultiplier": 4,
+      "rttMs": 150,
+      "throughputKbps": 1638.4
+    }
+  },
+  "runs": [
+    { "performance": 90, "accessibility": 100, "cls": 0.0000465144, "lcpMs": 2347.6004, "tbtMs": 322.3379, "speedIndexMs": 2660.6313 },
+    { "performance": 95, "accessibility": 100, "cls": 0.0000465144, "lcpMs": 1608.4485, "tbtMs": 222.5, "speedIndexMs": 1608.4485 },
+    { "performance": 96, "accessibility": 100, "cls": 0.0000465144, "lcpMs": 1655.5626, "tbtMs": 190, "speedIndexMs": 1655.5626 }
+  ],
+  "median": {
+    "performance": 95,
+    "accessibility": 100,
+    "cls": 0.0000465144,
+    "lcpMs": 1655.5626,
+    "tbtMs": 222.5,
+    "speedIndexMs": 1655.5626
+  },
+  "audits": { "colorContrast": "pass" },
+  "limitations": [
+    "This is a local optimized build, not a measurement of the deployed CloudFront distribution.",
+    "Lighthouse mobile emulation is not a physical-device measurement.",
+    "Only Chromium was used; Firefox, Safari, and manual assistive-technology review were not measured."
+  ]
+}

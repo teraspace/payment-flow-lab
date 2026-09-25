@@ -6,11 +6,13 @@ import request from 'supertest';
 import { createHash } from 'node:crypto';
 import { AppModule } from '../app.module';
 import { configureApplication } from '../configure-application';
+import { CheckoutPiiRetentionService } from '../checkouts/checkout-pii-retention.service';
 import { PaymentGateway, ProviderTransaction, ProviderTransactionStatus, PAYMENT_GATEWAY } from './payment-gateway.contract';
 import { PaymentsService } from './payments.service';
 import {
   PaymentGatewayConfigurationError,
   PaymentGatewayRejectedError,
+  PaymentGatewayUnavailableError,
 } from './payment-gateway.errors';
 
 describe('payment lifecycle API (PostgreSQL)', () => {
@@ -201,6 +203,53 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     expect(gateway.tokenizeEncryptedCard).not.toHaveBeenCalled();
   });
 
+  it('maps provider configuration and availability failures to safe checkout responses', async () => {
+    gateway.getAcceptanceDocuments.mockRejectedValueOnce(new PaymentGatewayConfigurationError());
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/acceptance-documents')
+      .expect(503);
+
+    gateway.getAcceptanceDocuments.mockRejectedValueOnce(new PaymentGatewayUnavailableError());
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/acceptance-documents')
+      .expect(503);
+
+    gateway.getTokenizationPublicKey.mockRejectedValueOnce(new PaymentGatewayUnavailableError());
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/tokenization-key')
+      .expect(503);
+
+    const encryptedPayload =
+      'eyJhbGciOiJSU0EtT0FFUC0yNTYifQ.dGVzdC1rZXk.dGVzdC1pdg.dGVzdC1jaXBoZXJ0ZXh0.dGVzdC10YWc';
+    gateway.tokenizeEncryptedCard.mockRejectedValueOnce(new PaymentGatewayRejectedError(422));
+    await request(app.getHttpServer())
+      .post('/api/v1/payment-configuration/card-tokens')
+      .send({ payload: encryptedPayload })
+      .expect(400);
+
+    gateway.tokenizeEncryptedCard.mockRejectedValueOnce(new PaymentGatewayConfigurationError());
+    await request(app.getHttpServer())
+      .post('/api/v1/payment-configuration/card-tokens')
+      .send({ payload: encryptedPayload })
+      .expect(503);
+
+    gateway.getAcceptanceDocuments.mockRejectedValueOnce(new Error('unexpected provider failure'));
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/acceptance-documents')
+      .expect(500);
+
+    gateway.getTokenizationPublicKey.mockRejectedValueOnce(new Error('unexpected provider failure'));
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/tokenization-key')
+      .expect(500);
+
+    gateway.tokenizeEncryptedCard.mockRejectedValueOnce(new Error('unexpected provider failure'));
+    await request(app.getHttpServer())
+      .post('/api/v1/payment-configuration/card-tokens')
+      .send({ payload: encryptedPayload })
+      .expect(500);
+  });
+
   afterAll(async () => {
     await app.close();
     await database.query(`
@@ -249,6 +298,12 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       paymentToken: 'different-single-use-token-0002',
     }).expect(409);
     expect(gateway.createTransaction).toHaveBeenCalledTimes(1);
+
+    const latest = await request(app.getHttpServer())
+      .get(`/api/v1/checkouts/${checkout.id}/payment-attempts/latest`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(latest.body.attemptId).toBe(created.body.attemptId);
 
     const attemptId = created.body.attemptId as string;
     const providerId = 'provider-tx-1';
@@ -317,6 +372,124 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       reservation_state: 'HELD',
       reserved_quantity: 1,
     });
+  });
+
+  it('reconciles an aged known pending transaction and flags it for review without releasing stock', async () => {
+    const checkout = await createCheckout();
+    const attempt = await postPayment(checkout.id, 'payment-review-threshold-001').expect(201);
+    await database.query(
+      `UPDATE payment_attempts
+       SET created_at = now() - interval '31 minutes',
+           last_reconciled_at = now() - interval '1 minute'
+       WHERE id = $1`,
+      [attempt.body.attemptId],
+    );
+
+    const reviewed = await request(app.getHttpServer())
+      .get(`/api/v1/checkouts/${checkout.id}/payment-attempts/${attempt.body.attemptId}`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(reviewed.body).toMatchObject({ state: 'PENDING', manualReviewRequired: true });
+    expect(gateway.getTransaction).toHaveBeenCalledWith('provider-tx-1');
+
+    const inventory = await database.query<{ reservation_state: string; reserved_quantity: number }>(`
+      SELECT reservation.state AS reservation_state, product.reserved_quantity
+      FROM reservations AS reservation
+      JOIN products AS product ON product.id = reservation.product_id
+      WHERE reservation.checkout_id = $1
+    `, [checkout.id]);
+    expect(inventory.rows[0]).toEqual({ reservation_state: 'HELD', reserved_quantity: 1 });
+    expect(gateway.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects invalid payment commands and reports missing attempts without contacting the provider', async () => {
+    const checkout = await createCheckout();
+    await postPayment(checkout.id, 'short').expect(400);
+    await postPayment('d7e3a5b1-1778-44c7-8bf4-cde6fbf317a1', 'payment-missing-key-001').expect(404);
+    await request(app.getHttpServer())
+      .get(`/api/v1/checkouts/${checkout.id}/payment-attempts/latest`)
+      .set('Cookie', cookie)
+      .expect(404);
+    await request(app.getHttpServer())
+      .get(`/api/v1/checkouts/${checkout.id}/payment-attempts/d7e3a5b1-1778-44c7-8bf4-cde6fbf317a1`)
+      .set('Cookie', cookie)
+      .expect(404);
+    expect(gateway.createTransaction).not.toHaveBeenCalled();
+  });
+
+  it('uses payment history as a second guard when checkout state appears eligible', async () => {
+    const checkout = await createCheckout();
+    const first = await postPayment(checkout.id, 'payment-history-guard-0001').expect(201);
+    expect(first.body.state).toBe('PENDING');
+
+    // Simulate a stale/incorrect checkout projection; an unreconciled charge must still block a new request.
+    await database.query(`UPDATE checkouts SET state = 'RESERVED' WHERE id = $1`, [checkout.id]);
+    await postPayment(checkout.id, 'payment-history-guard-0002').expect(409);
+    expect(gateway.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a provider response with mismatched payment details for manual review and keeps stock held', async () => {
+    const checkout = await createCheckout();
+    gateway.createTransaction.mockImplementationOnce(async (input) => ({
+      id: 'provider-tx-mismatched-amount',
+      reference: input.reference,
+      amountInCents: input.amountCop * 100 + 1,
+      currency: input.currency,
+      status: 'PENDING',
+    }));
+
+    const attempt = await postPayment(checkout.id, 'payment-mismatch-response-001').expect(201);
+    expect(attempt.body).toMatchObject({ state: 'UNKNOWN_OUTCOME', manualReviewRequired: true });
+    const state = await database.query<{ checkout_state: string; reservation_state: string; reserved_quantity: number }>(`
+      SELECT checkout.state AS checkout_state, reservation.state AS reservation_state,
+             product.reserved_quantity
+      FROM checkouts AS checkout
+      JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+      JOIN products AS product ON product.id = reservation.product_id
+      WHERE checkout.id = $1
+    `, [checkout.id]);
+    expect(state.rows[0]).toEqual({
+      checkout_state: 'UNKNOWN_OUTCOME',
+      reservation_state: 'HELD',
+      reserved_quantity: 1,
+    });
+  });
+
+  it('applies a confirmed void by releasing the hold and closing checkout', async () => {
+    const checkout = await createCheckout();
+    nextCreateStatus = 'VOIDED';
+    const attempt = await postPayment(checkout.id, 'payment-provider-void-0001').expect(201);
+    expect(attempt.body.state).toBe('VOIDED');
+    const state = await database.query<{ checkout_state: string; reservation_state: string; reserved_quantity: number }>(`
+      SELECT checkout.state AS checkout_state, reservation.state AS reservation_state,
+             product.reserved_quantity
+      FROM checkouts AS checkout
+      JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+      JOIN products AS product ON product.id = reservation.product_id
+      WHERE checkout.id = $1
+    `, [checkout.id]);
+    expect(state.rows[0]).toEqual({ checkout_state: 'CANCELLED', reservation_state: 'RELEASED', reserved_quantity: 0 });
+  });
+
+  it('does not replay a payment command after the retention job erases its fingerprint', async () => {
+    const checkout = await createCheckout();
+    nextCreateStatus = 'DECLINED';
+    const key = 'payment-retention-replay-001';
+    const attempt = await postPayment(checkout.id, key).expect(201);
+    await database.query(
+      `UPDATE checkouts SET created_at = now() - interval '31 days' WHERE id = $1`,
+      [checkout.id],
+    );
+    await expect(app.get(CheckoutPiiRetentionService).redactExpiredPersonalData()).resolves.toBe(1);
+
+    await postPayment(checkout.id, key).expect(410);
+    await postPayment(checkout.id, 'payment-after-retention-new-key-01').expect(410);
+    expect(gateway.createTransaction).toHaveBeenCalledTimes(1);
+    const fingerprint = await database.query<{ fingerprint: string | null }>(
+      `SELECT request_fingerprint_hash AS fingerprint FROM payment_attempts WHERE id = $1`,
+      [attempt.body.attemptId],
+    );
+    expect(fingerprint.rows[0]?.fingerprint).toBeNull();
   });
 
   it('keeps a proven local failure distinct from a provider attempt', async () => {
@@ -446,6 +619,10 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       .expect(200);
     await request(app.getHttpServer())
       .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent({ ...transaction, status: 'APPROVED' }, approvedTimestamp + 1, eventSecret))
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
       .send(approvedEvent)
       .expect(200);
 
@@ -463,11 +640,13 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       attempt_state: string;
       checkout_state: string;
       receipt_count: string;
+      duplicate_count: string;
       stale_count: string;
       fulfillment_count: string;
     }>(`
       SELECT attempt.state AS attempt_state, checkout.state AS checkout_state,
              (SELECT count(*)::text FROM payment_event_receipts WHERE payment_attempt_id = attempt.id) AS receipt_count,
+             (SELECT count(*)::text FROM payment_event_receipts WHERE payment_attempt_id = attempt.id AND disposition = 'DUPLICATE') AS duplicate_count,
              (SELECT count(*)::text FROM payment_event_receipts WHERE payment_attempt_id = attempt.id AND disposition = 'STALE') AS stale_count,
              (SELECT count(*)::text FROM fulfillments WHERE checkout_id = checkout.id) AS fulfillment_count
       FROM payment_attempts AS attempt
@@ -477,7 +656,8 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     expect(state.rows[0]).toEqual({
       attempt_state: 'APPROVED',
       checkout_state: 'PAID',
-      receipt_count: '2',
+      receipt_count: '3',
+      duplicate_count: '1',
       stale_count: '1',
       fulfillment_count: '1',
     });
@@ -491,7 +671,52 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     await database.query(
       `UPDATE payment_event_receipts SET received_at = now() - interval '366 days'`,
     );
-    await expect(paymentsService.purgeExpiredEventReceipts()).resolves.toBe(2);
+    await expect(paymentsService.purgeExpiredEventReceipts()).resolves.toBe(3);
+  });
+
+  it('rejects correctly signed webhook events outside the accepted time window', async () => {
+    const checkout = await createCheckout();
+    const attempt = await postPayment(checkout.id, 'payment-event-time-window-01').expect(201);
+    const transaction = transactions.get('provider-tx-1');
+    if (!transaction) throw new Error('Provider test transaction is missing.');
+    const now = Math.floor(Date.now() / 1000);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent(transaction, now - 48 * 60 * 60 - 1, eventSecret))
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent(transaction, now + 61, eventSecret))
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send([])
+      .expect(400);
+    expect(attempt.body.state).toBe('PENDING');
+    const count = await database.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM payment_event_receipts',
+    );
+    expect(count.rows[0]?.count).toBe('0');
+  });
+
+  it('records a correctly signed event without a matching payment attempt', async () => {
+    const transaction: ProviderTransaction = {
+      id: 'provider-tx-without-local-attempt',
+      reference: 'pfl_unknown_but_valid_signature',
+      amountInCents: 4200000,
+      currency: 'COP',
+      status: 'APPROVED',
+    };
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent(transaction, Math.floor(Date.now() / 1000), eventSecret))
+      .expect(200);
+
+    const receipt = await database.query<{ disposition: string; payment_attempt_id: string | null }>(
+      'SELECT disposition, payment_attempt_id FROM payment_event_receipts',
+    );
+    expect(receipt.rows).toEqual([{ disposition: 'UNMATCHED', payment_attempt_id: null }]);
   });
 
   it('flags a newer contradictory void after approval for manual review', async () => {
