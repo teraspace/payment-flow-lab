@@ -17,14 +17,34 @@ export class ReservationExpirationService {
       JOIN checkouts AS c ON c.id = r.checkout_id
       WHERE r.state = 'HELD'
         AND r.expires_at <= now()
-        AND c.state = 'RESERVED'
-      ORDER BY r.product_id, r.id
-      FOR UPDATE OF r
+        AND c.state IN ('RESERVED', 'PAYMENT_FAILED')
+      ORDER BY r.checkout_id, r.product_id, r.id
     `);
 
     let releasedCount = 0;
 
-    for (const reservation of expired.rows) {
+    for (const candidate of expired.rows) {
+      // Keep the shared checkout -> reservation -> product lock order used by
+      // payment transitions. Recheck every predicate after acquiring locks.
+      const checkout = await client.query<{ id: string }>(
+        `SELECT id FROM checkouts
+         WHERE id = $1 AND state IN ('RESERVED', 'PAYMENT_FAILED')
+         FOR UPDATE`,
+        [candidate.checkout_id],
+      );
+      if (checkout.rowCount !== 1) continue;
+
+      const reservation = await client.query<ExpiredReservationRow>(
+        `SELECT id, checkout_id, product_id, quantity
+         FROM reservations
+         WHERE id = $1 AND checkout_id = $2
+           AND state = 'HELD' AND expires_at <= now()
+         FOR UPDATE`,
+        [candidate.id, candidate.checkout_id],
+      );
+      const held = reservation.rows[0];
+      if (!held) continue;
+
       const released = await client.query<ExpiredReservationRow>(
         `
           UPDATE reservations
@@ -32,7 +52,7 @@ export class ReservationExpirationService {
           WHERE id = $1 AND state = 'HELD' AND expires_at <= now()
           RETURNING id, checkout_id, product_id, quantity
         `,
-        [reservation.id],
+        [held.id],
       );
 
       const transitioned = released.rows[0];
@@ -59,7 +79,7 @@ export class ReservationExpirationService {
         `
           UPDATE checkouts
           SET state = 'EXPIRED', updated_at = now()
-          WHERE id = $1 AND state = 'RESERVED'
+          WHERE id = $1 AND state IN ('RESERVED', 'PAYMENT_FAILED')
         `,
         [transitioned.checkout_id],
       );

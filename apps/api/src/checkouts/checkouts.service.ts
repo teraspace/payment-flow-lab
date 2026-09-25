@@ -33,7 +33,16 @@ interface ExistingIdempotencyRow extends QueryResultRow {
 
 interface CheckoutRow extends QueryResultRow {
   id: string;
-  state: 'RESERVED' | 'EXPIRED';
+  state:
+    | 'RESERVED'
+    | 'PAYMENT_PENDING'
+    | 'UNKNOWN_OUTCOME'
+    | 'PAYMENT_FAILED'
+    | 'PAID'
+    | 'CANCEL_PENDING'
+    | 'CANCELLED'
+    | 'EXPIRED'
+    | 'FULFILLMENT_EXCEPTION';
   subtotal_minor: string;
   base_fee_minor: string;
   delivery_fee_minor: string;
@@ -45,7 +54,7 @@ interface CheckoutRow extends QueryResultRow {
   customer_email: string | null;
   recipient: string | null;
   delivery_address: string | null;
-  reservation_state: 'HELD' | 'RELEASED';
+  reservation_state: 'HELD' | 'RELEASED' | 'COMMITTED';
   product_id: string;
   product_sku: string;
   product_name: string;
@@ -56,7 +65,16 @@ interface CheckoutRow extends QueryResultRow {
 
 export interface CheckoutView {
   checkoutId: string;
-  state: 'RESERVED' | 'EXPIRED';
+  state:
+    | 'RESERVED'
+    | 'PAYMENT_PENDING'
+    | 'UNKNOWN_OUTCOME'
+    | 'PAYMENT_FAILED'
+    | 'PAID'
+    | 'CANCEL_PENDING'
+    | 'CANCELLED'
+    | 'EXPIRED'
+    | 'FULFILLMENT_EXCEPTION';
   customer: { fullName: string | null; email: string | null };
   delivery: { recipient: string | null; address: string | null };
   item: {
@@ -72,7 +90,7 @@ export interface CheckoutView {
   deliveryFeeMinor: number;
   totalAmountInMinorUnits: number;
   currency: string;
-  reservation: { state: 'HELD' | 'RELEASED'; expiresAt: Date };
+  reservation: { state: 'HELD' | 'RELEASED' | 'COMMITTED'; expiresAt: Date };
   createdAt: Date;
 }
 

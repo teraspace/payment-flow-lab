@@ -67,8 +67,8 @@ class CheckoutItemResponse {
 }
 
 class CheckoutReservationResponse {
-  @ApiProperty({ enum: ['HELD', 'RELEASED'] })
-  state!: 'HELD' | 'RELEASED';
+  @ApiProperty({ enum: ['HELD', 'RELEASED', 'COMMITTED'] })
+  state!: 'HELD' | 'RELEASED' | 'COMMITTED';
 
   @ApiProperty()
   expiresAt!: Date;
@@ -78,8 +78,20 @@ class CheckoutResponse implements CheckoutView {
   @ApiProperty({ format: 'uuid' })
   checkoutId!: string;
 
-  @ApiProperty({ enum: ['RESERVED', 'EXPIRED'] })
-  state!: 'RESERVED' | 'EXPIRED';
+  @ApiProperty({
+    enum: [
+      'RESERVED',
+      'PAYMENT_PENDING',
+      'UNKNOWN_OUTCOME',
+      'PAYMENT_FAILED',
+      'PAID',
+      'CANCEL_PENDING',
+      'CANCELLED',
+      'EXPIRED',
+      'FULFILLMENT_EXCEPTION',
+    ],
+  })
+  state!: CheckoutView['state'];
 
   @ApiProperty({ type: CheckoutCustomerResponse })
   customer!: CheckoutCustomerResponse;

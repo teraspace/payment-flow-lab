@@ -1,5 +1,15 @@
 import { z } from 'zod';
 
+const optionalNonEmptyString = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().min(1).optional(),
+);
+
+const optionalUrl = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.url().optional(),
+);
+
 const environmentSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
@@ -34,6 +44,24 @@ const environmentSchema = z.object({
     .max(86_400)
     .default(600),
   GUEST_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  PAYMENT_GATEWAY_ENVIRONMENT: z.enum(['test', 'prod']).default('test'),
+  PAYMENT_GATEWAY_BASE_URL: optionalUrl,
+  PAYMENT_GATEWAY_PUBLIC_KEY: optionalNonEmptyString,
+  PAYMENT_GATEWAY_PRIVATE_KEY: optionalNonEmptyString,
+  PAYMENT_GATEWAY_INTEGRITY_SECRET: optionalNonEmptyString,
+  PAYMENT_GATEWAY_EVENTS_SECRET: optionalNonEmptyString,
+  PAYMENT_UNRESOLVED_REVIEW_THRESHOLD_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(604_800)
+    .default(1_800),
+  PAYMENT_EVENT_RECEIPT_RETENTION_DAYS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3_650)
+    .default(365),
 }).superRefine((environment, context) => {
   if (environment.DATABASE_URL) return;
 
