@@ -1,16 +1,10 @@
 jest.mock('../app/service-api', () => ({
   ApiRequestError: jest.requireActual('../app/service-api').ApiRequestError,
-  loadAcceptanceDocumentsFromApi: jest.fn(),
   submitPaymentAttempt: jest.fn(),
 }));
 
 jest.mock('../app/sandbox-payment', () => ({
   getSandboxPaymentConfiguration: jest.fn(),
-  SANDBOX_TEST_CARDS: {
-    approved: '4242424242424242',
-    declined: '4111111111111111',
-  },
-  tokenizeSandboxCard: jest.fn(),
 }));
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -18,13 +12,9 @@ import userEvent from '@testing-library/user-event';
 import { axe } from 'jest-axe';
 import {
   ApiRequestError,
-  loadAcceptanceDocumentsFromApi,
   submitPaymentAttempt,
 } from '../app/service-api';
-import {
-  getSandboxPaymentConfiguration,
-  tokenizeSandboxCard,
-} from '../app/sandbox-payment';
+import { getSandboxPaymentConfiguration } from '../app/sandbox-payment';
 import { PaymentPanel } from './PaymentPanel';
 import { makeAttempt, makeCheckout } from '../test-fixtures';
 
@@ -35,10 +25,8 @@ const acceptance = {
   personalDataAuthorizationUrl: 'https://provider.example.test/privacy',
 };
 
-const mockLoadAcceptance = jest.mocked(loadAcceptanceDocumentsFromApi);
 const mockSubmitAttempt = jest.mocked(submitPaymentAttempt);
 const mockGetConfiguration = jest.mocked(getSandboxPaymentConfiguration);
-const mockTokenize = jest.mocked(tokenizeSandboxCard);
 
 function renderPanel(props: Partial<React.ComponentProps<typeof PaymentPanel>> = {}) {
   return render(
@@ -46,24 +34,15 @@ function renderPanel(props: Partial<React.ComponentProps<typeof PaymentPanel>> =
       attemptLookupState="not-found"
       canStartAttempt
       checkout={makeCheckout()}
+      paymentToken="tok_test_opaque"
+      paymentAcceptance={acceptance}
+      onRequestCard={jest.fn()}
+      onPaymentTokenUsed={jest.fn()}
+      onAttemptResult={jest.fn()}
       onRefreshAttempt={jest.fn().mockResolvedValue(undefined)}
       {...props}
     />,
   );
-}
-
-async function acceptDocuments(user: ReturnType<typeof userEvent.setup>) {
-  await screen.findByLabelText(/Leí y acepto/);
-  await user.click(screen.getByLabelText(/Leí y acepto/));
-  await user.click(screen.getByLabelText(/Autorizo el tratamiento/));
-}
-
-async function fillCard(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText('Nombre de prueba en la tarjeta'), 'Ada Test');
-  await user.type(screen.getByLabelText('Número de tarjeta de prueba'), '4242424242424242');
-  await user.selectOptions(screen.getByLabelText('Mes'), '12');
-  await user.type(screen.getByLabelText('Año'), '40');
-  await user.type(screen.getByLabelText('CVC de prueba'), '123');
 }
 
 describe('PaymentPanel', () => {
@@ -71,8 +50,6 @@ describe('PaymentPanel', () => {
     jest.restoreAllMocks();
     window.sessionStorage.clear();
     mockGetConfiguration.mockReturnValue({ ready: true, configuration: { environment: 'test' } });
-    mockLoadAcceptance.mockResolvedValue(acceptance);
-    mockTokenize.mockResolvedValue('tok_test_opaque');
     mockSubmitAttempt.mockResolvedValue(makeAttempt({ state: 'APPROVED' }));
   });
 
@@ -80,30 +57,25 @@ describe('PaymentPanel', () => {
     jest.useRealTimers();
   });
 
-  it('loads acceptance documents and keeps payment disabled until both consents are given', async () => {
+  it('requires the in-memory token and acceptance before enabling payment', async () => {
     const user = userEvent.setup();
-    const { container } = renderPanel();
-    expect(await screen.findByText('Usa exclusivamente una tarjeta de prueba')).toBeInTheDocument();
-    await screen.findByLabelText(/Leí y acepto/);
-    expect(screen.getByRole('link', { name: 'política de privacidad' })).toHaveAttribute('target', '_blank');
+    const onRequestCard = jest.fn();
+    const { container } = renderPanel({ paymentToken: null, paymentAcceptance: null, onRequestCard });
+    expect(screen.getByText('Tarjeta y autorización requeridas')).toBeInTheDocument();
     const payButton = screen.getByRole('button', { name: /Pagar/ });
     expect(payButton).toBeDisabled();
-    await user.click(screen.getByLabelText(/Leí y acepto/));
-    expect(payButton).toBeDisabled();
-    await user.click(screen.getByLabelText(/Autorizo el tratamiento/));
-    expect(payButton).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Ingresar tarjeta' }));
+    expect(onRequestCard).toHaveBeenCalledTimes(1);
     expect(await axe(container)).toHaveNoViolations();
   });
 
-  it('submits a token, consent values, and installments, then clears card fields', async () => {
+  it('submits the in-memory sandbox token, consent values, and installments', async () => {
     const user = userEvent.setup();
     const refresh = jest.fn().mockResolvedValue(undefined);
     const result = makeAttempt({ state: 'APPROVED', attemptNumber: 1 });
     mockSubmitAttempt.mockResolvedValue(result);
     renderPanel({ onRefreshAttempt: refresh });
-    await screen.findByText('Usa exclusivamente una tarjeta de prueba');
-    await acceptDocuments(user);
-    await fillCard(user);
+    await screen.findByText('Tarjeta ficticia tokenizada para sandbox.');
     await user.selectOptions(screen.getByLabelText('¿En cuántas cuotas quieres pagar?'), '3');
     await user.click(screen.getByRole('button', { name: /Pagar/ }));
     await waitFor(() => expect(mockSubmitAttempt).toHaveBeenCalledWith(
@@ -117,31 +89,27 @@ describe('PaymentPanel', () => {
       },
     ));
     expect(await screen.findByText('Pago aprobado en sandbox')).toBeInTheDocument();
-    const cardArgument = mockTokenize.mock.calls[0][0];
-    expect(cardArgument).toEqual({ number: '', expMonth: '', expYear: '', cvc: '', cardHolder: '' });
     expect(window.sessionStorage.getItem(`pfl.payment-recovery.v1:${makeCheckout().checkoutId}`)).toBeNull();
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a direct submit unless both consents have been checked', async () => {
-    const { container } = renderPanel();
-    await screen.findByText('Usa exclusivamente una tarjeta de prueba');
-    await screen.findByLabelText(/Leí y acepto/);
+  it('fails closed if acceptance data is missing', async () => {
+    const { container } = renderPanel({ paymentAcceptance: null });
+    await screen.findByText('Tarjeta ficticia tokenizada para sandbox.');
     const form = container.querySelector('form.payment-form')!;
     fireEvent.submit(form);
-    expect(await screen.findByRole('alert')).toHaveTextContent('Debes aceptar ambos documentos');
-    expect(mockTokenize).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('El pago sandbox no está listo');
+    expect(mockSubmitAttempt).not.toHaveBeenCalled();
   });
 
-  it('shows tokenization errors without starting a payment attempt', async () => {
+  it('asks for a fresh sandbox token after refresh without submitting a payment', async () => {
     const user = userEvent.setup();
-    mockTokenize.mockRejectedValue(new Error('Tarjeta de prueba inválida'));
-    renderPanel();
-    await screen.findByText('Usa exclusivamente una tarjeta de prueba');
-    await acceptDocuments(user);
-    await fillCard(user);
-    await user.click(screen.getByRole('button', { name: /Pagar/ }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Tarjeta de prueba inválida');
+    const onRequestCard = jest.fn();
+    renderPanel({ paymentToken: null, paymentAcceptance: null, onRequestCard });
+    await screen.findByText('Tarjeta y autorización requeridas');
+    expect(screen.getByRole('button', { name: /Pagar/ })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Ingresar tarjeta' }));
+    expect(onRequestCard).toHaveBeenCalledTimes(1);
     expect(mockSubmitAttempt).not.toHaveBeenCalled();
     expect(window.sessionStorage.getItem(`pfl.payment-recovery.v1:${makeCheckout().checkoutId}`)).toBeNull();
   });
@@ -151,26 +119,12 @@ describe('PaymentPanel', () => {
     const refresh = jest.fn().mockResolvedValue(undefined);
     mockSubmitAttempt.mockRejectedValue(new ApiRequestError(504, 'API timeout'));
     renderPanel({ onRefreshAttempt: refresh });
-    await screen.findByText('Usa exclusivamente una tarjeta de prueba');
-    await acceptDocuments(user);
-    await fillCard(user);
+    await screen.findByText('Tarjeta ficticia tokenizada para sandbox.');
     await user.click(screen.getByRole('button', { name: /Pagar/ }));
     expect(await screen.findByText('Estamos recuperando el resultado.')).toBeInTheDocument();
     expect(screen.getByText(/No vuelvas a enviar el pago/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Pagar/ })).not.toBeInTheDocument();
     expect(refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it('retries acceptance loading after an error', async () => {
-    const user = userEvent.setup();
-    mockLoadAcceptance
-      .mockRejectedValueOnce(new Error('unavailable'))
-      .mockResolvedValueOnce(acceptance);
-    renderPanel();
-    expect(await screen.findByRole('alert')).toHaveTextContent('No pudimos obtener los contratos vigentes');
-    await user.click(screen.getByRole('button', { name: 'Volver a cargar' }));
-    expect(await screen.findByText('Usa exclusivamente una tarjeta de prueba')).toBeInTheDocument();
-    expect(mockLoadAcceptance).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed when the payment gateway is not in sandbox', () => {
@@ -181,7 +135,6 @@ describe('PaymentPanel', () => {
     renderPanel();
     expect(screen.getByRole('status')).toHaveTextContent('El pago está deshabilitado');
     expect(screen.getByText('No se aceptan tarjetas reales ni se crean cobros reales en esta aplicación.')).toBeInTheDocument();
-    expect(mockLoadAcceptance).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Número de tarjeta de prueba')).not.toBeInTheDocument();
   });
 
@@ -232,6 +185,11 @@ describe('PaymentPanel', () => {
         attemptLookupState="found"
         canStartAttempt
         checkout={makeCheckout()}
+        paymentToken="tok_test_opaque"
+        paymentAcceptance={acceptance}
+        onRequestCard={jest.fn()}
+        onPaymentTokenUsed={jest.fn()}
+        onAttemptResult={jest.fn()}
         onRefreshAttempt={refresh}
       />,
     );

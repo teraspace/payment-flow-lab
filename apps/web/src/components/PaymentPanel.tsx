@@ -2,17 +2,13 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { formatCop, formatDateTime } from '../app/format';
 import {
   ApiRequestError,
-  loadAcceptanceDocumentsFromApi,
   submitPaymentAttempt,
   type Checkout,
   type PaymentAttempt,
 } from '../app/service-api';
 import {
   getSandboxPaymentConfiguration,
-  SANDBOX_TEST_CARDS,
-  tokenizeSandboxCard,
   type AcceptanceDocuments,
-  type SandboxCardData,
 } from '../app/sandbox-payment';
 
 type AttemptLookupState = 'loading' | 'not-found' | 'error' | 'found';
@@ -22,6 +18,11 @@ interface PaymentPanelProps {
   attempt?: PaymentAttempt;
   attemptLookupState: AttemptLookupState;
   canStartAttempt: boolean;
+  paymentToken: string | null;
+  paymentAcceptance: AcceptanceDocuments | null;
+  onRequestCard: () => void;
+  onPaymentTokenUsed: () => void;
+  onAttemptResult: (attempt: PaymentAttempt) => void;
   onRefreshAttempt: () => Promise<unknown>;
 }
 
@@ -33,14 +34,14 @@ export function PaymentPanel({
   attempt,
   attemptLookupState,
   canStartAttempt,
+  paymentToken,
+  paymentAcceptance,
+  onRequestCard,
+  onPaymentTokenUsed,
+  onAttemptResult,
   onRefreshAttempt,
 }: PaymentPanelProps) {
   const paymentConfiguration = useMemo(() => getSandboxPaymentConfiguration(), []);
-  const [acceptance, setAcceptance] = useState<AcceptanceDocuments | null>(null);
-  const [acceptanceError, setAcceptanceError] = useState<string | null>(null);
-  const [acceptanceLoading, setAcceptanceLoading] = useState(paymentConfiguration.ready);
-  const [acceptedTerms, setAcceptedTerms] = useState(false);
-  const [acceptedPersonalData, setAcceptedPersonalData] = useState(false);
   const [installments, setInstallments] = useState(1);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -57,24 +58,6 @@ export function PaymentPanel({
   const unresolved = visibleAttempt
     ? ['CREATED', 'DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME'].includes(visibleAttempt.state)
     : false;
-
-  useEffect(() => {
-    if (!paymentConfiguration.ready) return;
-    let active = true;
-    loadAcceptanceDocumentsFromApi()
-      .then((documents) => {
-        if (active) setAcceptance(documents);
-      })
-      .catch(() => {
-        if (active) setAcceptanceError('No pudimos obtener los contratos vigentes del sandbox.');
-      })
-      .finally(() => {
-        if (active) setAcceptanceLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [paymentConfiguration]);
 
   useEffect(() => {
     if (attempt) {
@@ -117,46 +100,23 @@ export function PaymentPanel({
     return () => window.clearInterval(timer);
   }, [onRefreshAttempt, unresolved]);
 
-  function retryAcceptanceFetch() {
-    if (!paymentConfiguration.ready) return;
-    setAcceptance(null);
-    setAcceptanceError(null);
-    setAcceptanceLoading(true);
-    loadAcceptanceDocumentsFromApi()
-      .then(setAcceptance)
-      .catch(() => setAcceptanceError('No pudimos obtener los contratos vigentes del sandbox.'))
-      .finally(() => setAcceptanceLoading(false));
-  }
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPaymentError(null);
 
-    if (!paymentConfiguration.ready || !acceptance) {
+    if (!paymentConfiguration.ready || !paymentAcceptance) {
       setPaymentError('El pago sandbox no está listo para enviar.');
       return;
     }
-    if (!acceptedTerms || !acceptedPersonalData) {
-      setPaymentError('Debes aceptar ambos documentos antes de continuar.');
+    if (!paymentToken) {
+      setPaymentError('Ingresa una tarjeta de prueba antes de confirmar el pago.');
+      onRequestCard();
       return;
     }
-
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const card: SandboxCardData = {
-      number: String(formData.get('cardNumber') ?? ''),
-      expMonth: String(formData.get('expMonth') ?? ''),
-      expYear: String(formData.get('expYear') ?? ''),
-      cvc: String(formData.get('cvc') ?? ''),
-      cardHolder: String(formData.get('cardHolder') ?? ''),
-    };
-    form.reset();
 
     setSubmitting(true);
     let paymentRequestStarted = false;
     try {
-      const paymentToken = await tokenizeSandboxCard(card);
-      clearCardData(card);
       const commandKey = crypto.randomUUID();
       if (!writePaymentRecoveryStart(checkout.checkoutId, Date.now())) {
         throw new Error(
@@ -168,13 +128,15 @@ export function PaymentPanel({
 
       const result = await submitPaymentAttempt(checkout.checkoutId, commandKey, {
         paymentToken,
-        acceptanceToken: acceptance.acceptanceToken,
-        personalDataAuthorizationToken: acceptance.personalDataAuthorizationToken,
+        acceptanceToken: paymentAcceptance.acceptanceToken,
+        personalDataAuthorizationToken: paymentAcceptance.personalDataAuthorizationToken,
         installments,
       });
       clearPaymentRecoveryStart(checkout.checkoutId);
       setRecoveryPendingRequested(false);
       setSubmittedAttempt(result);
+      onAttemptResult(result);
+      onPaymentTokenUsed();
       await onRefreshAttempt();
     } catch (error) {
       if (paymentRequestStarted) {
@@ -189,11 +151,10 @@ export function PaymentPanel({
             ? error.message
             : error instanceof Error
               ? error.message
-              : 'No se pudo tokenizar la tarjeta de prueba.',
+              : 'No se pudo iniciar el pago de prueba.',
         );
       }
     } finally {
-      clearCardData(card);
       setSubmitting(false);
     }
   }
@@ -202,8 +163,8 @@ export function PaymentPanel({
     <section className="payment-panel" aria-labelledby="payment-title">
       <div className="payment-heading">
         <div>
-          <p className="eyebrow">Paso 3 de 3 · Pago seguro</p>
-          <h2 id="payment-title">Paga en ambiente de prueba.</h2>
+          <p className="eyebrow">Paso 3 de 5 · Pago seguro</p>
+          <h2 id="payment-title">Confirma el pago de prueba.</h2>
         </div>
         <span className="sandbox-pill"><span aria-hidden="true">●</span> Sólo sandbox</span>
       </div>
@@ -275,155 +236,58 @@ export function PaymentPanel({
               </div>
             </div>
           ) : (
-            <>
-              <div className="test-card-note">
-                <span className="test-card-icon" aria-hidden="true">✓</span>
-                <div>
-                  <strong>Usa exclusivamente una tarjeta de prueba</strong>
-                  <p>
-                    Aprobada: <code>{SANDBOX_TEST_CARDS.approved}</code> · Rechazada:{' '}
-                    <code>{SANDBOX_TEST_CARDS.declined}</code>
-                  </p>
-                  <small>El formulario sólo tokeniza estos dos números y no tiene datos precargados.</small>
+            <form className="payment-form" onSubmit={submit}>
+              {paymentAcceptance ? (
+                <div className="consent-confirmed" role="status">
+                  <strong>Autorizaciones aceptadas</strong>
+                  <span>
+                    <a href={paymentAcceptance.acceptanceUrl} rel="noreferrer" target="_blank">Privacidad</a>
+                    {' · '}
+                    <a href={paymentAcceptance.personalDataAuthorizationUrl} rel="noreferrer" target="_blank">Tratamiento de datos</a>
+                  </span>
                 </div>
-              </div>
-
-              {acceptanceLoading ? (
-                <div className="inline-status" role="status">Cargando documentos de aceptación…</div>
-              ) : acceptanceError ? (
-                <div className="message-card message-card--error" role="alert">
-                  <p>{acceptanceError}</p>
-                  <button className="button button--secondary" onClick={retryAcceptanceFetch} type="button">
-                    Volver a cargar
-                  </button>
-                </div>
-              ) : acceptance ? (
-                <form className="payment-form" onSubmit={submit}>
-                  <fieldset className="consent-section">
-                    <legend>Antes de pagar</legend>
-                    <label className="consent-check">
-                      <input
-                        checked={acceptedTerms}
-                        onChange={(event) => setAcceptedTerms(event.target.checked)}
-                        type="checkbox"
-                      />
-                      <span>
-                        Leí y acepto la{' '}
-                        <a href={acceptance.acceptanceUrl} rel="noreferrer" target="_blank">
-                          política de privacidad
-                        </a>.
-                      </span>
-                    </label>
-                    <label className="consent-check">
-                      <input
-                        checked={acceptedPersonalData}
-                        onChange={(event) => setAcceptedPersonalData(event.target.checked)}
-                        type="checkbox"
-                      />
-                      <span>
-                        Autorizo el{' '}
-                        <a
-                          href={acceptance.personalDataAuthorizationUrl}
-                          rel="noreferrer"
-                          target="_blank"
-                        >
-                          tratamiento de mis datos personales
-                        </a>.
-                      </span>
-                    </label>
-                  </fieldset>
-
-                  <div className="card-form-grid">
-                    <label className="field card-field--wide">
-                      <span>Nombre de prueba en la tarjeta</span>
-                      <input
-                        autoComplete="off"
-                        maxLength={120}
-                        name="cardHolder"
-                        required
-                        type="text"
-                      />
-                    </label>
-                    <label className="field card-field--wide">
-                      <span>Número de tarjeta de prueba</span>
-                      <input
-                        autoComplete="off"
-                        inputMode="numeric"
-                        maxLength={19}
-                        name="cardNumber"
-                        pattern="[0-9 ]{16,19}"
-                        placeholder="•••• •••• •••• ••••"
-                        required
-                        type="text"
-                      />
-                    </label>
-                    <label className="field">
-                      <span>Mes</span>
-                      <select defaultValue="" name="expMonth" required>
-                        <option disabled value="">Mes</option>
-                        {Array.from({ length: 12 }, (_, index) => {
-                          const month = String(index + 1).padStart(2, '0');
-                          return <option key={month} value={month}>{month}</option>;
-                        })}
-                      </select>
-                    </label>
-                    <label className="field">
-                      <span>Año</span>
-                      <input
-                        autoComplete="off"
-                        inputMode="numeric"
-                        maxLength={2}
-                        minLength={2}
-                        name="expYear"
-                        pattern="[0-9]{2}"
-                        placeholder="30"
-                        required
-                        type="text"
-                      />
-                    </label>
-                    <label className="field">
-                      <span>CVC de prueba</span>
-                      <input
-                        autoComplete="off"
-                        inputMode="numeric"
-                        maxLength={3}
-                        minLength={3}
-                        name="cvc"
-                        pattern="[0-9]{3}"
-                        required
-                        type="password"
-                      />
-                    </label>
-                  </div>
-
-                  <label className="field installments-field">
-                    <span>¿En cuántas cuotas quieres pagar?</span>
-                    <select
-                      onChange={(event) => setInstallments(Number(event.target.value))}
-                      value={installments}
-                    >
-                      {[1, 2, 3, 6, 12].map((value) => (
-                        <option key={value} value={value}>{value} {value === 1 ? 'cuota' : 'cuotas'}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  {paymentError ? <p className="inline-error" role="alert">{paymentError}</p> : null}
-
-                  <button
-                    className="button button--primary button--wide"
-                    disabled={submitting || acceptanceLoading || !acceptedTerms || !acceptedPersonalData}
-                    type="submit"
-                  >
-                    {submitting ? 'Tokenizando para sandbox…' : `Pagar ${formatCop(checkout.totalAmountInMinorUnits, checkout.currency)}`}
-                    <span aria-hidden="true">→</span>
-                  </button>
-                  <p className="privacy-note">
-                    La tarjeta se cifra en el navegador; el API retransmite sólo ese paquete cifrado al sandbox. El API nunca recibe el número ni el CVC legibles.
-                  </p>
-                </form>
               ) : null}
-            </>
+
+              {!paymentToken ? (
+                <div className="message-card message-card--info">
+                  <div>
+                    <strong>Tarjeta y autorización requeridas</strong>
+                    <p>Después de una actualización, vuelve a ingresar la tarjeta ficticia y aceptar los documentos.</p>
+                  </div>
+                  <button className="button button--secondary" onClick={onRequestCard} type="button">
+                    Ingresar tarjeta
+                  </button>
+                </div>
+              ) : (
+                <p className="payment-token-ready" role="status">Tarjeta ficticia tokenizada para sandbox.</p>
+              )}
+
+              <label className="field installments-field">
+                <span>¿En cuántas cuotas quieres pagar?</span>
+                <select
+                  onChange={(event) => setInstallments(Number(event.target.value))}
+                  value={installments}
+                >
+                  {[1, 2, 3, 6, 12].map((value) => (
+                    <option key={value} value={value}>{value} {value === 1 ? 'cuota' : 'cuotas'}</option>
+                  ))}
+                </select>
+              </label>
+
+              {paymentError ? <p className="inline-error" role="alert">{paymentError}</p> : null}
+
+              <button
+                className="button button--primary button--wide"
+                disabled={submitting || !paymentToken || !paymentAcceptance}
+                type="submit"
+              >
+                {submitting ? 'Enviando pago a sandbox…' : `Pagar ${formatCop(checkout.totalAmountInMinorUnits, checkout.currency)}`}
+                <span aria-hidden="true">→</span>
+              </button>
+              <p className="privacy-note">
+                El intento se registra primero como PENDING en el API. El token se consume una sola vez y el estado se concilia con el proveedor.
+              </p>
+            </form>
           )}
         </div>
       )}
@@ -462,8 +326,10 @@ function AttemptStatus({ attempt }: { attempt: PaymentAttempt }) {
       tone: 'neutral',
     },
     PENDING: {
-      title: 'Pago pendiente de confirmación',
-      description: 'Conservamos tu reserva y consultamos el estado automáticamente.',
+      title: attempt.dispatching ? 'Enviando pago a sandbox' : 'Pago pendiente de confirmación',
+      description: attempt.dispatching
+        ? 'El API ya guardó la transacción como PENDING antes de llamar al proveedor.'
+        : 'Conservamos tu reserva y consultamos el estado automáticamente.',
       tone: 'pending',
     },
     UNKNOWN_OUTCOME: {
@@ -508,14 +374,6 @@ function AttemptStatus({ attempt }: { attempt: PaymentAttempt }) {
       </div>
     </div>
   );
-}
-
-function clearCardData(card: SandboxCardData): void {
-  card.number = '';
-  card.expMonth = '';
-  card.expYear = '';
-  card.cvc = '';
-  card.cardHolder = '';
 }
 
 function readPaymentRecoveryStart(checkoutId: string): number | null {

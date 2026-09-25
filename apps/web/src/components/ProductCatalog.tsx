@@ -89,7 +89,7 @@ export function ProductCatalog({
                     onClick={() => onSelect(product)}
                     type="button"
                   >
-                    Elegir producto
+                    Pay with credit card
                     <span aria-hidden="true">↗</span>
                   </button>
                 </div>

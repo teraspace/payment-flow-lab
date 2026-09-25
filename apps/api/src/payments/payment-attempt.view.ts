@@ -15,6 +15,7 @@ export interface PaymentAttemptView {
   checkoutId: string;
   attemptNumber: number;
   state: PaymentAttemptState;
+  dispatching: boolean;
   amountCop: number;
   currency: string;
   manualReviewRequired: boolean;

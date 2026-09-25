@@ -1,47 +1,132 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+jest.mock('../app/service-api', () => ({
+  loadAcceptanceDocumentsFromApi: jest.fn(),
+}));
+
+jest.mock('../app/sandbox-payment', () => ({
+  getSandboxPaymentConfiguration: jest.fn(),
+  SANDBOX_TEST_CARDS: {
+    approved: '4242424242424242',
+    declined: '4111111111111111',
+  },
+  tokenizeSandboxCard: jest.fn(),
+}));
+
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import {
+  loadAcceptanceDocumentsFromApi,
+} from '../app/service-api';
+import {
+  getSandboxPaymentConfiguration,
+  tokenizeSandboxCard,
+} from '../app/sandbox-payment';
 import { CheckoutDetailsForm } from './CheckoutDetailsForm';
 import { makeProduct } from '../test-fixtures';
 
+const acceptance = {
+  acceptanceToken: 'sandbox-acceptance-token',
+  acceptanceUrl: 'https://provider.example.test/privacy.pdf',
+  personalDataAuthorizationToken: 'sandbox-data-token',
+  personalDataAuthorizationUrl: 'https://provider.example.test/data.pdf',
+};
+
+const mockAcceptance = jest.mocked(loadAcceptanceDocumentsFromApi);
+const mockConfiguration = jest.mocked(getSandboxPaymentConfiguration);
+const mockTokenize = jest.mocked(tokenizeSandboxCard);
+
+function renderModal(props: Partial<React.ComponentProps<typeof CheckoutDetailsForm>> = {}) {
+  return render(
+    <CheckoutDetailsForm
+      busy={false}
+      onBack={jest.fn()}
+      onSubmit={jest.fn()}
+      product={makeProduct()}
+      {...props}
+    />,
+  );
+}
+
+async function fillCheckoutAndCard(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText('Nombre completo'), 'Ada Lovelace');
+  await user.type(screen.getByLabelText('Correo electrónico'), 'ada@example.test');
+  await user.type(screen.getByLabelText('Persona que recibe'), 'Ada Lovelace');
+  await user.type(screen.getByLabelText('Dirección completa'), 'Calle 1 #2-3, Bogotá');
+  await user.type(screen.getByLabelText('Nombre en la tarjeta'), 'Ada Test');
+  await user.type(screen.getByLabelText('Número de tarjeta de prueba'), '4242424242424242');
+  await user.selectOptions(screen.getByLabelText('Mes'), '12');
+  await user.type(screen.getByLabelText('Año'), '40');
+  await user.type(screen.getByLabelText('CVC'), '123');
+  await user.click(screen.getByLabelText(/Leí y acepto/));
+  await user.click(screen.getByLabelText(/Autorizo el tratamiento/));
+}
+
 describe('CheckoutDetailsForm', () => {
-  it('collects trimmed delivery details and quantity', async () => {
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    mockConfiguration.mockReturnValue({ ready: true, configuration: { environment: 'test' } });
+    mockAcceptance.mockResolvedValue(acceptance);
+    mockTokenize.mockResolvedValue('tok_test_opaque');
+  });
+
+  it('collects delivery and card data in the required modal and tokenizes only after consent', async () => {
+    const user = userEvent.setup();
+    const onSubmit = jest.fn().mockResolvedValue(undefined);
+    const onDraftChange = jest.fn();
+    let tokenizedCard: unknown;
+    mockTokenize.mockImplementation(async (card) => {
+      tokenizedCard = { ...card };
+      return 'tok_test_opaque';
+    });
+    renderModal({ onSubmit, onDraftChange });
+
+    expect(screen.getByRole('dialog', { name: 'Pay with credit card' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Número de tarjeta de prueba')).toBeInTheDocument();
+    expect(screen.getByLabelText('Dirección completa')).toBeInTheDocument();
+    await screen.findByLabelText(/Leí y acepto/);
+    await fillCheckoutAndCard(user);
+    await user.click(screen.getByRole('button', { name: 'Continuar al resumen' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(
+      {
+        productId: 'product-1',
+        quantity: 1,
+        customer: { fullName: 'Ada Lovelace', email: 'ada@example.test' },
+        delivery: { recipient: 'Ada Lovelace', address: 'Calle 1 #2-3, Bogotá' },
+      },
+      'tok_test_opaque',
+      acceptance,
+    ));
+    expect(tokenizedCard).toEqual({
+      number: '4242424242424242',
+      expMonth: '12',
+      expYear: '40',
+      cvc: '123',
+      cardHolder: 'Ada Test',
+    });
+    expect(onDraftChange).toHaveBeenCalledWith(expect.objectContaining({
+      customer: { fullName: 'Ada Lovelace', email: 'ada@example.test' },
+    }));
+    expect(screen.getByLabelText('Número de tarjeta de prueba')).toHaveValue('');
+  });
+
+  it('refuses to tokenize without both consents and clears raw card fields after a tokenization error', async () => {
     const user = userEvent.setup();
     const onSubmit = jest.fn();
-    render(
-      <CheckoutDetailsForm busy={false} onBack={jest.fn()} onSubmit={onSubmit} product={makeProduct()} />,
-    );
-    await user.click(screen.getByRole('button', { name: 'Agregar una unidad' }));
-    await user.type(screen.getByLabelText('Nombre completo'), '  Ada Lovelace  ');
-    await user.type(screen.getByLabelText('Correo electrónico'), 'ada@example.test');
-    await user.type(screen.getByLabelText('Persona que recibe'), ' Ada ');
-    await user.type(screen.getByLabelText('Dirección completa'), ' Calle 1 #2-3 ');
-    fireEvent.submit(screen.getByRole('button', { name: /Revisar y continuar/ }).closest('form')!);
-    expect(onSubmit).toHaveBeenCalledWith({
-      productId: 'product-1',
-      quantity: 2,
-      customer: { fullName: 'Ada Lovelace', email: 'ada@example.test' },
-      delivery: { recipient: 'Ada', address: 'Calle 1 #2-3' },
-    });
-  });
+    mockTokenize.mockRejectedValue(new Error('Invalid sandbox test card'));
+    renderModal({ onSubmit });
+    await screen.findByLabelText(/Leí y acepto/);
+    await fillCheckoutAndCard(user);
 
-  it('caps quantity to available stock and disables actions while busy', async () => {
-    const user = userEvent.setup();
-    const onBack = jest.fn();
-    render(
-      <CheckoutDetailsForm busy onBack={onBack} onSubmit={jest.fn()} product={makeProduct({ availableQuantity: 1 })} />,
-    );
-    expect(screen.getByRole('button', { name: 'Agregar una unidad' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Reservando inventario/ })).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: /Volver al catálogo/ }));
-    expect(onBack).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('Hasta 1 disponibles')).toBeInTheDocument();
-  });
+    // Clear one consent to exercise the handler guard even if a browser submits the form directly.
+    await user.click(screen.getByLabelText(/Autorizo el tratamiento/));
+    fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Debes aceptar ambos documentos');
+    expect(mockTokenize).not.toHaveBeenCalled();
 
-  it('shows a submission error and caps an unusually high stock count', () => {
-    render(
-      <CheckoutDetailsForm busy={false} error="Intenta más tarde" onBack={jest.fn()} onSubmit={jest.fn()} product={makeProduct({ availableQuantity: 200 })} />,
-    );
-    expect(screen.getByRole('alert')).toHaveTextContent('Intenta más tarde');
-    expect(screen.getByText('Hasta 99 disponibles')).toBeInTheDocument();
+    await user.click(screen.getByLabelText(/Autorizo el tratamiento/));
+    fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Invalid sandbox test card');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Número de tarjeta de prueba')).toHaveValue('');
   });
 });

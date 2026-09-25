@@ -77,6 +77,7 @@ export interface PaymentAttempt {
     | 'DECLINED'
     | 'ERROR'
     | 'VOIDED';
+  dispatching: boolean;
   amountCop: number;
   currency: string;
   manualReviewRequired: boolean;

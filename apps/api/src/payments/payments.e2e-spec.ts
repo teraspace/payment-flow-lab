@@ -21,6 +21,7 @@ describe('payment lifecycle API (PostgreSQL)', () => {
   let paymentsService: PaymentsService;
   let cookie: string;
   let nextCreateStatus: ProviderTransactionStatus = 'PENDING';
+  let beforeProviderCreate: ((reference: string) => Promise<void>) | undefined;
   const currentStatuses = new Map<string, ProviderTransactionStatus>();
   const transactions = new Map<string, ProviderTransaction>();
   let transactionSequence = 0;
@@ -93,6 +94,7 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     process.env.PAYMENT_EVENT_RECEIPT_RETENTION_DAYS = '365';
 
     gateway.createTransaction.mockImplementation(async (input) => {
+      await beforeProviderCreate?.(input.reference);
       transactionSequence += 1;
       const transaction: ProviderTransaction = {
         id: `provider-tx-${transactionSequence}`,
@@ -132,6 +134,7 @@ describe('payment lifecycle API (PostgreSQL)', () => {
 
   beforeEach(async () => {
     nextCreateStatus = 'PENDING';
+    beforeProviderCreate = undefined;
     transactions.clear();
     currentStatuses.clear();
     transactionSequence = 0;
@@ -271,11 +274,30 @@ describe('payment lifecycle API (PostgreSQL)', () => {
   it('persists before dispatch, replays without a second charge, and reconciles approval atomically', async () => {
     const checkout = await createCheckout();
     const key = 'payment-replay-key-000001';
+    beforeProviderCreate = async (reference) => {
+      const persisted = await database.query<{
+        state: string;
+        checkout_state: string;
+        provider_response_received_at: Date | null;
+      }>(`
+        SELECT attempt.state, checkout.state AS checkout_state,
+               attempt.provider_response_received_at
+        FROM payment_attempts AS attempt
+        JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
+        WHERE attempt.provider_reference = $1
+      `, [reference]);
+      expect(persisted.rows[0]).toEqual({
+        state: 'PENDING',
+        checkout_state: 'PAYMENT_PENDING',
+        provider_response_received_at: null,
+      });
+    };
     const created = await postPayment(checkout.id, key).expect(201);
     expect(created.body).toMatchObject({
       checkoutId: checkout.id,
       attemptNumber: 1,
       state: 'PENDING',
+      dispatching: false,
       amountCop: 42000,
       currency: 'COP',
       manualReviewRequired: false,

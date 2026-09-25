@@ -1,5 +1,6 @@
 import { skipToken } from '@reduxjs/toolkit/query';
 import { useCallback, useEffect, useState } from 'react';
+import type { AcceptanceDocuments } from './app/sandbox-payment';
 import {
   useCreateCheckoutMutation,
   useGetCheckoutQuery,
@@ -9,14 +10,16 @@ import {
   useInitializeGuestSessionMutation,
   useRecoverCheckoutMutation,
   type Checkout,
+  type PaymentAttempt,
   type Product,
 } from './app/service-api';
-import { CheckoutDetailsForm } from './components/CheckoutDetailsForm';
+import { CheckoutDetailsForm, type CheckoutDetails } from './components/CheckoutDetailsForm';
 import { CheckoutSummary } from './components/CheckoutSummary';
 import { PaymentPanel } from './components/PaymentPanel';
 import { ProductCatalog } from './components/ProductCatalog';
 
 const CHECKOUT_COMMAND_KEY = 'pfl.checkout-command.v1';
+const CHECKOUT_DRAFT_KEY = 'pfl.checkout-draft.v1';
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function ApiStatus() {
@@ -37,6 +40,12 @@ export function App() {
   const [recoverCheckout, { reset: resetCheckoutRecovery }] = useRecoverCheckoutMutation();
   const [checkoutId, setCheckoutId] = useState<string | null>(() => readCheckoutId());
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [checkoutDraft, setCheckoutDraft] = useState<CheckoutDetails | null>(() => readCheckoutDraft());
+  const [modalOpen, setModalOpen] = useState(() => readCheckoutDraft() !== null);
+  const [paymentToken, setPaymentToken] = useState<string | null>(null);
+  const [paymentAcceptance, setPaymentAcceptance] = useState<AcceptanceDocuments | null>(null);
+  const [localPaymentAttempt, setLocalPaymentAttempt] = useState<PaymentAttempt | null>(null);
+  const [returnedFromResult, setReturnedFromResult] = useState(false);
   const [recoveryChecked, setRecoveryChecked] = useState(() =>
     readCheckoutId() !== null || hasInvalidCheckoutId() || readCheckoutCommandKey() === null,
   );
@@ -54,8 +63,37 @@ export function App() {
   const refetchCheckout = checkoutQuery.refetch;
   const refetchLatestPaymentAttempt = paymentAttemptQuery.refetch;
   const productsQuery = useGetProductsQuery(undefined, {
-    skip: !sessionReady || Boolean(checkoutId) || !recoveryChecked,
+    skip: !sessionReady || !recoveryChecked,
   });
+  const refetchProducts = productsQuery.refetch;
+
+  const catalogProducts = productsQuery.data ?? [];
+  const modalProduct = selectedProduct ?? catalogProducts.find((product) =>
+    product.id === (checkoutId ? checkoutQuery.data?.item.productId : checkoutDraft?.productId),
+  ) ?? null;
+  const apiAttempt = paymentAttemptQuery.data;
+  const latestAttempt = localPaymentAttempt &&
+    (!apiAttempt || new Date(localPaymentAttempt.updatedAt) > new Date(apiAttempt.updatedAt))
+    ? localPaymentAttempt
+    : apiAttempt;
+  const checkout = checkoutQuery.data;
+  const attemptLookupState = paymentAttemptQuery.isSuccess
+    ? 'found'
+    : paymentAttemptQuery.isError && getErrorStatus(paymentAttemptQuery.error) === 404
+      ? 'not-found'
+      : paymentAttemptQuery.isError
+        ? 'error'
+        : 'loading';
+  const unresolvedAttempt = Boolean(
+    latestAttempt && ['CREATED', 'DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME'].includes(latestAttempt.state),
+  );
+  const terminalResult = Boolean(
+    checkout && !unresolvedAttempt && (
+      ['PAID', 'PAYMENT_FAILED', 'CANCELLED', 'EXPIRED', 'FULFILLMENT_EXCEPTION'].includes(checkout.state) ||
+      ['APPROVED', 'DECLINED', 'ERROR', 'VOIDED'].includes(latestAttempt?.state ?? '')
+    ) && !(paymentToken && paymentAcceptance && canPayAgain(checkout, latestAttempt)),
+  );
+  const modalVisible = modalOpen && modalProduct !== null;
 
   useEffect(() => {
     void initializeGuestSession().unwrap().catch(() => undefined);
@@ -64,9 +102,12 @@ export function App() {
   const openCheckout = useCallback((id: string) => {
     setCheckoutId(id);
     setSelectedProduct(null);
+    setModalOpen(false);
+    setCheckoutDraft(null);
     setRecoveryMessage(null);
     setCheckoutError(null);
     setRecoveryChecked(true);
+    clearCheckoutDraft();
     const url = new URL(window.location.href);
     url.searchParams.set('checkout', id);
     window.history.replaceState(null, '', url);
@@ -75,12 +116,29 @@ export function App() {
   const browseCatalog = useCallback(() => {
     setCheckoutId(null);
     setSelectedProduct(null);
+    setModalOpen(false);
+    setCheckoutDraft(null);
+    setPaymentToken(null);
+    setPaymentAcceptance(null);
+    setLocalPaymentAttempt(null);
     setRecoveryMessage(null);
     setCheckoutError(null);
     setInvalidCheckoutLink(false);
+    clearCheckoutDraft();
     const url = new URL(window.location.href);
     url.searchParams.delete('checkout');
     window.history.replaceState(null, '', url);
+  }, []);
+
+  const returnToCatalog = useCallback(() => {
+    setReturnedFromResult(true);
+    void refetchProducts();
+    browseCatalog();
+  }, [browseCatalog, refetchProducts]);
+
+  const updateCheckoutDraft = useCallback((draft: CheckoutDetails) => {
+    setCheckoutDraft(draft);
+    writeCheckoutDraft(draft);
   }, []);
 
   useEffect(() => {
@@ -137,13 +195,24 @@ export function App() {
     ]);
   }, [checkoutId, refetchCheckout, refetchLatestPaymentAttempt]);
 
-  async function submitCheckout(details: {
-    productId: string;
-    quantity: number;
-    customer: { fullName: string; email: string };
-    delivery: { recipient: string; address: string };
-  }) {
+  useEffect(() => {
+    if (!checkoutId || !terminalResult || modalOpen) return;
+    const timer = window.setTimeout(returnToCatalog, 8_000);
+    return () => window.clearTimeout(timer);
+  }, [checkoutId, modalOpen, returnToCatalog, terminalResult]);
+
+  async function submitCheckout(
+    details: CheckoutDetails,
+    nextPaymentToken: string,
+    acceptance: AcceptanceDocuments,
+  ) {
     setCheckoutError(null);
+    if (checkoutId) {
+      setPaymentToken(nextPaymentToken);
+      setPaymentAcceptance(acceptance);
+      setModalOpen(false);
+      return;
+    }
     const commandKey = createOrReadCheckoutCommandKey();
     if (!commandKey) {
       setCheckoutError(
@@ -160,6 +229,9 @@ export function App() {
       resetCheckoutCreation();
       clearCheckoutCommandKey();
       openCheckout(checkout.checkoutId);
+      setPaymentToken(nextPaymentToken);
+      setPaymentAcceptance(acceptance);
+      setLocalPaymentAttempt(null);
     } catch (error) {
       resetCheckoutCreation();
       try {
@@ -167,6 +239,9 @@ export function App() {
         resetCheckoutRecovery();
         clearCheckoutCommandKey();
         openCheckout(recovered.checkoutId);
+        setPaymentToken(nextPaymentToken);
+        setPaymentAcceptance(acceptance);
+        setLocalPaymentAttempt(null);
       } catch (recoveryError) {
         resetCheckoutRecovery();
         if (getErrorStatus(recoveryError) === 410) {
@@ -186,16 +261,10 @@ export function App() {
   }
 
   const routeIsInvalid = invalidCheckoutLink && !checkoutId;
-  const activeStep = checkoutId ? 3 : selectedProduct ? 2 : 1;
-  const checkout = checkoutQuery.data;
-  const latestAttempt = paymentAttemptQuery.data;
-  const attemptLookupState = paymentAttemptQuery.isSuccess
-    ? 'found'
-    : paymentAttemptQuery.isError && getErrorStatus(paymentAttemptQuery.error) === 404
-      ? 'not-found'
-      : paymentAttemptQuery.isError
-        ? 'error'
-        : 'loading';
+  const activeStep = modalOpen
+    ? 2
+    : checkoutId ? terminalResult ? 4 : 3
+      : returnedFromResult ? 5 : 1;
   const canStartAttempt = Boolean(
     checkout &&
     ['found', 'not-found'].includes(attemptLookupState) &&
@@ -225,7 +294,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="page-shell" id="main-content">
+      <main aria-hidden={modalVisible || undefined} className="page-shell" id="main-content">
         <div className="page-intro">
           <div>
             <p className="eyebrow">Checkout engineering challenge</p>
@@ -281,7 +350,7 @@ export function App() {
             <span className="loading-mark" aria-hidden="true" />
             <div>
               <strong>Recuperando tu pedido…</strong>
-              <p>Consultamos el API con la clave temporal; no guardamos los datos personales en el navegador.</p>
+              <p>Consultamos la reserva en el API. Los datos de tarjeta nunca se guardan en el navegador.</p>
             </div>
           </div>
         ) : checkoutId ? (
@@ -300,33 +369,55 @@ export function App() {
                 </button>
               </div>
             </div>
+          ) : checkout && terminalResult ? (
+            <section className="final-status" aria-labelledby="final-status-title">
+              <FinalStatus
+                attempt={latestAttempt}
+                canRetry={canPayAgain(checkout, latestAttempt)}
+                checkout={checkout}
+                onReturn={returnToCatalog}
+                onRetry={() => {
+                  setCheckoutDraft(detailsFromCheckout(checkout));
+                  setModalOpen(true);
+                }}
+              />
+            </section>
           ) : checkout ? (
-            <section className="checkout-layout checkout-layout--payment" aria-label="Estado del checkout">
-              <div className="checkout-main">
-                <div className="checkout-main-header">
-                  <div>
-                    <p className="eyebrow">Pedido {checkout.checkoutId.slice(0, 8)}</p>
-                    <h2>Tu compra está en marcha.</h2>
-                  </div>
-                  <button
-                    className="icon-button"
-                    aria-label="Actualizar el estado del pedido"
-                    onClick={() => void refreshCheckoutAndAttempt()}
-                    type="button"
-                  >
-                    ↻
-                  </button>
-                </div>
-                {checkoutError ? <p className="inline-error" role="alert">{checkoutError}</p> : null}
+            <section className="summary-screen" aria-labelledby="summary-screen-title">
+              <div className="summary-screen__heading">
+                <p className="eyebrow">Paso 3 de 5 · Resumen</p>
+                <h2 id="summary-screen-title">Confirma tu pedido.</h2>
+                <p>Los importes y la disponibilidad vienen del API. La tarjeta permanece tokenizada sólo en esta pestaña.</p>
+              </div>
+              {checkoutError ? <p className="inline-error" role="alert">{checkoutError}</p> : null}
+              <CheckoutSummary checkout={checkout}>
                 <PaymentPanel
                   attempt={latestAttempt}
                   attemptLookupState={attemptLookupState}
                   canStartAttempt={canStartAttempt}
                   checkout={checkout}
+                  paymentToken={paymentToken}
+                  paymentAcceptance={paymentAcceptance}
+                  onPaymentTokenUsed={() => {
+                    setPaymentToken(null);
+                    setPaymentAcceptance(null);
+                  }}
                   onRefreshAttempt={refreshCheckoutAndAttempt}
+                  onRequestCard={() => {
+                    setCheckoutDraft(detailsFromCheckout(checkout));
+                    setModalOpen(true);
+                  }}
+                  onAttemptResult={setLocalPaymentAttempt}
                 />
-              </div>
-              <CheckoutSummary checkout={checkout} />
+              </CheckoutSummary>
+              <button
+                aria-label="Actualizar el estado del pedido"
+                className="text-button summary-screen__refresh"
+                onClick={() => void refreshCheckoutAndAttempt()}
+                type="button"
+              >
+                Actualizar estado del pedido
+              </button>
             </section>
           ) : (
             <div className="large-message" role="status" aria-live="polite">
@@ -334,17 +425,6 @@ export function App() {
               <div><strong>Cargando el resumen</strong><p>Validando la reserva con el API…</p></div>
             </div>
           )
-        ) : selectedProduct ? (
-          <CheckoutDetailsForm
-            busy={checkoutCreating}
-            error={checkoutError ?? recoveryMessage ?? undefined}
-            onBack={() => {
-              setSelectedProduct(null);
-              setCheckoutError(null);
-            }}
-            onSubmit={submitCheckout}
-            product={selectedProduct}
-          />
         ) : (
           <>
             {recoveryMessage ? (
@@ -362,10 +442,20 @@ export function App() {
                 : undefined}
               isLoading={productsQuery.isLoading}
               onRetry={() => void productsQuery.refetch()}
-              onSelect={(product) => {
-                setCheckoutError(null);
-                setSelectedProduct(product);
-              }}
+            onSelect={(product) => {
+              setCheckoutError(null);
+              setReturnedFromResult(false);
+              setSelectedProduct(product);
+              const draft: CheckoutDetails = {
+                productId: product.id,
+                quantity: 1,
+                customer: { fullName: '', email: '' },
+                delivery: { recipient: '', address: '' },
+              };
+              setCheckoutDraft(draft);
+              writeCheckoutDraft(draft);
+              setModalOpen(true);
+            }}
               products={productsQuery.data ?? []}
             />
           </>
@@ -378,8 +468,29 @@ export function App() {
         </section>
       </main>
 
+      {modalVisible && modalProduct ? (
+        <CheckoutDetailsForm
+          busy={checkoutCreating}
+          error={checkoutError ?? undefined}
+          existingCheckout={Boolean(checkoutId && checkout)}
+          initialDetails={checkout ? detailsFromCheckout(checkout) : checkoutDraft ?? undefined}
+          onBack={() => {
+            setModalOpen(false);
+            setCheckoutError(null);
+            if (!checkoutId) {
+              setSelectedProduct(null);
+              setCheckoutDraft(null);
+              clearCheckoutDraft();
+            }
+          }}
+          onDraftChange={checkoutId ? undefined : updateCheckoutDraft}
+          onSubmit={submitCheckout}
+          product={modalProduct}
+        />
+      ) : null}
+
       <footer className="page-footer">
-        <span>Payment Flow Lab <span aria-hidden="true">·</span> Iteración I4</span>
+        <span>Payment Flow Lab</span>
         <span>Los pagos de esta experiencia son exclusivamente de sandbox.</span>
       </footer>
     </div>
@@ -387,7 +498,7 @@ export function App() {
 }
 
 function CheckoutProgress({ activeStep }: { activeStep: number }) {
-  const steps = ['Producto', 'Entrega', 'Pago'];
+  const steps = ['Producto', 'Tarjeta y entrega', 'Resumen', 'Resultado', 'Producto'];
   return (
     <nav className="progress-nav" aria-label="Progreso de compra">
       <ol>
@@ -399,7 +510,7 @@ function CheckoutProgress({ activeStep }: { activeStep: number }) {
             <li
               aria-current={current ? 'step' : undefined}
               className={completed ? 'progress-step progress-step--complete' : current ? 'progress-step progress-step--current' : 'progress-step'}
-              key={step}
+              key={`${number}-${step}`}
             >
               <span className="progress-number" aria-hidden="true">{completed ? '✓' : number}</span>
               <span>{step}</span>
@@ -407,8 +518,58 @@ function CheckoutProgress({ activeStep }: { activeStep: number }) {
           );
         })}
       </ol>
-      <div className="progress-line" aria-hidden="true"><span style={{ width: `${((activeStep - 1) / 2) * 100}%` }} /></div>
+      <div className="progress-line" aria-hidden="true"><span style={{ width: `${((activeStep - 1) / 4) * 100}%` }} /></div>
     </nav>
+  );
+}
+
+function FinalStatus({
+  attempt,
+  canRetry,
+  checkout,
+  onReturn,
+  onRetry,
+}: {
+  attempt?: PaymentAttempt;
+  canRetry: boolean;
+  checkout: Checkout;
+  onReturn: () => void;
+  onRetry: () => void;
+}) {
+  const approved = attempt?.state === 'APPROVED' || checkout.state === 'PAID';
+  const title = approved
+    ? 'Pago aprobado en sandbox'
+    : checkout.state === 'FULFILLMENT_EXCEPTION'
+      ? 'Tu pedido requiere revisión'
+      : attempt?.state === 'VOIDED' || checkout.state === 'CANCELLED'
+        ? 'El pago fue anulado'
+        : attempt?.state === 'DECLINED' || attempt?.state === 'ERROR' || checkout.state === 'PAYMENT_FAILED'
+          ? 'El pago no fue aprobado'
+          : 'La reserva terminó';
+  const description = approved
+    ? 'El inventario se confirmó y el producto quedó asignado para entrega. No se hizo un cobro real.'
+    : checkout.state === 'FULFILLMENT_EXCEPTION'
+      ? 'El resultado del proveedor requiere conciliación manual antes de confirmar la entrega.'
+      : 'El resultado quedó registrado y el catálogo mostrará las unidades disponibles actualizadas.';
+
+  return (
+    <div className="final-status-card" role="status" aria-live="polite">
+      <span className={`final-status-mark${approved ? ' final-status-mark--success' : ''}`} aria-hidden="true">
+        {approved ? '✓' : '!'}
+      </span>
+      <p className="eyebrow">Paso 4 de 5 · Resultado final</p>
+      <h2 id="final-status-title">{title}</h2>
+      <p>{description}</p>
+      <p className="final-status-countdown">Volveremos al catálogo en unos segundos.</p>
+      {canRetry ? (
+        <button className="button button--secondary" onClick={onRetry} type="button">
+          Reintentar con una nueva tarjeta de prueba
+        </button>
+      ) : null}
+      <button className="button button--primary" onClick={onReturn} type="button">
+        Ir al catálogo con inventario actualizado <span aria-hidden="true">→</span>
+      </button>
+    </div>
   );
 }
 
@@ -428,6 +589,54 @@ function canPayAgain(checkout: Checkout, attempt?: { state: string; attemptNumbe
 function readCheckoutId(): string | null {
   const id = new URLSearchParams(window.location.search).get('checkout');
   return id && UUID_V4.test(id) ? id : null;
+}
+
+function readCheckoutDraft(): CheckoutDetails | null {
+  try {
+    const raw = window.sessionStorage.getItem(CHECKOUT_DRAFT_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<CheckoutDetails>;
+    if (
+      typeof value.productId !== 'string' || !UUID_V4.test(value.productId) ||
+      !Number.isInteger(value.quantity) || (value.quantity ?? 0) < 1 || (value.quantity ?? 0) > 99 ||
+      typeof value.customer?.fullName !== 'string' || typeof value.customer.email !== 'string' ||
+      typeof value.delivery?.recipient !== 'string' || typeof value.delivery.address !== 'string'
+    ) return null;
+    return value as CheckoutDetails;
+  } catch {
+    return null;
+  }
+}
+
+function writeCheckoutDraft(draft: CheckoutDetails): void {
+  try {
+    window.sessionStorage.setItem(CHECKOUT_DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    // The API checkout URL and idempotency record remain the recovery source after creation.
+  }
+}
+
+function clearCheckoutDraft(): void {
+  try {
+    window.sessionStorage.removeItem(CHECKOUT_DRAFT_KEY);
+  } catch {
+    // Storage may be unavailable in private browsing.
+  }
+}
+
+function detailsFromCheckout(checkout: Checkout): CheckoutDetails {
+  return {
+    productId: checkout.item.productId,
+    quantity: checkout.item.quantity,
+    customer: {
+      fullName: checkout.customer.fullName ?? '',
+      email: checkout.customer.email ?? '',
+    },
+    delivery: {
+      recipient: checkout.delivery.recipient ?? '',
+      address: checkout.delivery.address ?? '',
+    },
+  };
 }
 
 function hasInvalidCheckoutId(): boolean {

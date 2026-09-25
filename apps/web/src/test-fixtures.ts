@@ -47,6 +47,7 @@ export function makeAttempt(overrides: Partial<PaymentAttempt> = {}): PaymentAtt
     checkoutId: 'a745095c-4932-4cdb-a1d3-2e30f81e380b',
     attemptNumber: 1,
     state: 'PENDING',
+    dispatching: false,
     amountCop: 54_350,
     currency: 'COP',
     manualReviewRequired: false,

@@ -72,6 +72,7 @@ interface AttemptRow extends QueryResultRow {
   manual_review_required_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  provider_response_received_at: Date | null;
 }
 
 interface AttemptPaymentData extends QueryResultRow {
@@ -86,6 +87,7 @@ interface AttemptPaymentData extends QueryResultRow {
   provider_status: ProviderTransactionStatus | null;
   provider_status_updated_at: Date | null;
   request_fingerprint_hash: string | null;
+  provider_response_received_at: Date | null;
 }
 
 interface AttemptContext extends AttemptPaymentData {
@@ -104,6 +106,7 @@ interface ReconciliationCandidate extends QueryResultRow {
   state: PaymentAttemptView['state'];
   created_at: Date;
   dispatch_started_at: Date | null;
+  provider_response_received_at: Date | null;
 }
 
 interface AttemptResult {
@@ -299,7 +302,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
             request_fingerprint_hash, provider_reference, amount_cop, currency,
             dispatch_started_at
           )
-          VALUES ($1, $2, 'DISPATCHING', $3, $4, $5, $6, $7, now())
+          VALUES ($1, $2, 'PENDING', $3, $4, $5, $6, $7, now())
           RETURNING *
         `,
         [
@@ -566,7 +569,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   private async markLocalFailure(attemptId: string): Promise<void> {
     await this.database.transaction(async (client) => {
       const row = await this.lockAttemptContext(client, attemptId);
-      if (!row || row.state !== 'DISPATCHING') return;
+      if (!row || !this.isDispatchInFlight(row)) return;
       await client.query(
         `
           UPDATE payment_attempts
@@ -584,10 +587,15 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private isDispatchInFlight(row: AttemptContext): boolean {
+    return (row.state === 'DISPATCHING' || row.state === 'PENDING') &&
+      row.provider_response_received_at === null;
+  }
+
   private async markRejected(attemptId: string, httpStatus: number): Promise<void> {
     await this.database.transaction(async (client) => {
       const row = await this.lockAttemptContext(client, attemptId);
-      if (!row || row.state !== 'DISPATCHING') return;
+      if (!row || !this.isDispatchInFlight(row)) return;
       await client.query(
         `
           UPDATE payment_attempts
@@ -610,7 +618,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   private async markUnknown(attemptId: string): Promise<void> {
     await this.database.transaction(async (client) => {
       const row = await this.lockAttemptContext(client, attemptId);
-      if (!row || row.state !== 'DISPATCHING') return;
+      if (!row || !this.isDispatchInFlight(row)) return;
       await client.query(
         `
           UPDATE payment_attempts
@@ -658,14 +666,15 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     ) {
       await client.query(
         `UPDATE payment_attempts
-         SET state = CASE WHEN state = 'DISPATCHING' THEN 'UNKNOWN_OUTCOME' ELSE state END,
-             unknown_outcome_at = CASE WHEN state = 'DISPATCHING' THEN now() ELSE unknown_outcome_at END,
+        SET state = CASE WHEN provider_response_received_at IS NULL THEN 'UNKNOWN_OUTCOME' ELSE state END,
+             unknown_outcome_at = CASE WHEN provider_response_received_at IS NULL THEN now() ELSE unknown_outcome_at END,
+             provider_response_received_at = COALESCE(provider_response_received_at, now()),
              manual_review_required_at = COALESCE(manual_review_required_at, now()),
              reconciliation_lease_until = NULL, last_reconciled_at = now(),
              updated_at = now() WHERE id = $1`,
         [attemptId],
       );
-      if (attempt.state === 'DISPATCHING') {
+      if (attempt.provider_response_received_at === null) {
         await client.query(
           `UPDATE checkouts SET state = 'UNKNOWN_OUTCOME', updated_at = now()
            WHERE id = $1 AND state = 'PAYMENT_PENDING'`,
@@ -743,6 +752,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         SET state = $2, provider_status = $2,
             provider_transaction_id = COALESCE(provider_transaction_id, $3),
             provider_status_updated_at = $4,
+            provider_response_received_at = COALESCE(provider_response_received_at, now()),
             last_reconciled_at = now(),
             unknown_outcome_at = NULL,
             reconciliation_lease_until = NULL,
@@ -890,7 +900,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
                attempt.state, attempt.provider_reference,
                attempt.provider_transaction_id, attempt.amount_cop,
                attempt.currency, attempt.provider_status,
-               attempt.provider_status_updated_at, attempt.request_fingerprint_hash
+               attempt.provider_status_updated_at, attempt.request_fingerprint_hash,
+               attempt.provider_response_received_at
         FROM payment_attempts AS attempt
         WHERE attempt.id = $1 AND attempt.checkout_id = $2
         FOR UPDATE
@@ -1036,6 +1047,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       checkoutId: row.checkout_id,
       attemptNumber: row.attempt_number,
       state: row.state,
+      dispatching: (row.state === 'DISPATCHING' || row.state === 'PENDING') &&
+        row.provider_response_received_at === null,
       amountCop: Number(row.amount_cop),
       currency: row.currency.trim(),
       manualReviewRequired: row.manual_review_required_at !== null,
@@ -1087,7 +1100,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     const candidates = await this.database.transaction(async (client) => {
       const result = await client.query<ReconciliationCandidate>(
         `
-          SELECT id, provider_transaction_id, state, created_at, dispatch_started_at
+          SELECT id, provider_transaction_id, state, created_at, dispatch_started_at,
+                 provider_response_received_at
           FROM payment_attempts
           WHERE state IN ('DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME')
             AND (reconciliation_lease_until IS NULL OR reconciliation_lease_until <= now())
@@ -1116,7 +1130,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       if (
-        candidate.state === 'DISPATCHING' &&
+        (candidate.state === 'DISPATCHING' || candidate.state === 'PENDING') &&
+        candidate.provider_response_received_at === null &&
         candidate.dispatch_started_at &&
         Date.now() - candidate.dispatch_started_at.getTime() >= DISPATCH_STALE_SECONDS * 1000
       ) {
