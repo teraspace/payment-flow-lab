@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   BadRequestException,
-  ConflictException,
-  GoneException,
   Injectable,
   Logger,
   NotFoundException,
@@ -31,6 +29,8 @@ import {
 } from './payment-gateway.errors';
 import { PaymentAttemptView } from './payment-attempt.view';
 import { ProviderEventEnvelope, verifyProviderEvent } from './payment-signatures';
+import { andThen, andThenAsync, err, ok, Result } from '../core/result';
+import { UseCaseError, useCaseError } from '../core/use-case-error';
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{16,128}$/;
 const PAYMENT_RETRY_WINDOW_SECONDS = 600;
@@ -112,6 +112,18 @@ interface ReconciliationCandidate extends QueryResultRow {
 interface AttemptResult {
   attempt: PaymentAttemptView;
   replayed: boolean;
+}
+
+interface PreparedAttempt {
+  attempt: PaymentAttemptView;
+  replayed: boolean;
+  context: {
+    attemptId: string;
+    reference: string;
+    amountCop: number;
+    currency: 'COP';
+    customerEmail: string;
+  } | null;
 }
 
 type EventDisposition =
@@ -202,101 +214,158 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     checkoutId: string,
     rawIdempotencyKey: string | undefined,
     dto: CreatePaymentAttemptDto,
-  ): Promise<AttemptResult> {
-    if (!rawIdempotencyKey || !IDEMPOTENCY_KEY_PATTERN.test(rawIdempotencyKey)) {
-      throw new BadRequestException(
-        'Idempotency-Key must contain 16 to 128 permitted characters.',
-      );
-    }
-
-    const idempotencyKeyHash = this.hash(rawIdempotencyKey);
-    const requestFingerprintHash = this.hash(
-      JSON.stringify([
-        dto.paymentToken,
-        dto.acceptanceToken,
-        dto.personalDataAuthorizationToken,
-        dto.installments ?? 1,
-      ]),
+  ): Promise<Result<AttemptResult, UseCaseError>> {
+    const validKey = this.validateIdempotencyKey(rawIdempotencyKey);
+    const preparedInput = andThen(validKey, (validIdempotencyKey) =>
+      ok({
+        idempotencyKeyHash: this.hash(validIdempotencyKey),
+        requestFingerprintHash: this.hash(
+          JSON.stringify([
+            dto.paymentToken,
+            dto.acceptanceToken,
+            dto.personalDataAuthorizationToken,
+            dto.installments ?? 1,
+          ]),
+        ),
+      }),
     );
 
-    const prepared = await this.database.transaction(async (client) => {
-      await this.reservationExpiration.releaseExpired(client);
-      const checkout = await this.lockCheckout(client, sessionId, checkoutId);
-      if (!checkout) throw new NotFoundException('Checkout not found.');
+    return andThenAsync<
+      { idempotencyKeyHash: string; requestFingerprintHash: string },
+      UseCaseError,
+      AttemptResult,
+      UseCaseError
+    >(preparedInput, async ({ idempotencyKeyHash, requestFingerprintHash }) => {
+      const preparedResult = await this.database.transactionResult<PreparedAttempt, UseCaseError>(
+        async (client) => {
+          await this.reservationExpiration.releaseExpired(client);
+          const checkout = await this.lockCheckout(client, sessionId, checkoutId);
+          if (!checkout) {
+            return err(useCaseError('CHECKOUT_NOT_FOUND', 'Checkout not found.'));
+          }
 
-      const replay = await client.query<AttemptRow>(
-        `
+          const replay = await client.query<AttemptRow>(
+            `
           SELECT *
           FROM payment_attempts
           WHERE checkout_id = $1 AND idempotency_key_hash = $2
           FOR UPDATE
         `,
-        [checkoutId, idempotencyKeyHash],
-      );
-      const prior = replay.rows[0];
-      if (prior) {
-        if (prior.request_fingerprint_hash === null) {
-          throw new GoneException('This payment replay window has expired.');
-        }
-        if (prior.request_fingerprint_hash !== requestFingerprintHash) {
-          throw new ConflictException(
-            'Idempotency-Key was already used with a different payment request.',
+            [checkoutId, idempotencyKeyHash],
           );
-        }
-        return { attempt: this.toView(prior), replayed: true, context: null };
-      }
+          const prior = replay.rows[0];
+          if (prior) {
+            if (prior.request_fingerprint_hash === null) {
+              return err(
+                useCaseError(
+                  'IDEMPOTENCY_REPLAY_EXPIRED',
+                  'This payment replay window has expired.',
+                ),
+              );
+            }
+            if (prior.request_fingerprint_hash !== requestFingerprintHash) {
+              return err(
+                useCaseError(
+                  'IDEMPOTENCY_PAYLOAD_CONFLICT',
+                  'Idempotency-Key was already used with a different payment request.',
+                ),
+              );
+            }
+            return ok({
+              attempt: this.toView(prior),
+              replayed: true,
+              context: null,
+            });
+          }
 
-      if (!['RESERVED', 'PAYMENT_FAILED'].includes(checkout.state)) {
-        throw new ConflictException('Checkout is not eligible for a payment attempt.');
-      }
-      if (checkout.reservation_state !== 'HELD' || checkout.reservation_expires_at <= new Date()) {
-        throw new ConflictException('The inventory reservation has expired.');
-      }
-      if (!checkout.customer_email) {
-        throw new GoneException('The checkout payment data is no longer available.');
-      }
+          if (!['RESERVED', 'PAYMENT_FAILED'].includes(checkout.state)) {
+            return err(
+              useCaseError(
+                'CHECKOUT_NOT_ELIGIBLE',
+                'Checkout is not eligible for a payment attempt.',
+              ),
+            );
+          }
+          if (
+            checkout.reservation_state !== 'HELD' ||
+            checkout.reservation_expires_at <= new Date()
+          ) {
+            return err(
+              useCaseError('RESERVATION_EXPIRED', 'The inventory reservation has expired.'),
+            );
+          }
+          if (!checkout.customer_email) {
+            return err(
+              useCaseError(
+                'CHECKOUT_DATA_EXPIRED',
+                'The checkout payment data is no longer available.',
+              ),
+            );
+          }
 
-      const history = await client.query<{
-        attempt_number: number;
-        state: PaymentAttemptView['state'];
-      }>(
-        `
+          const history = await client.query<{
+            attempt_number: number;
+            state: PaymentAttemptView['state'];
+          }>(
+            `
           SELECT attempt_number, state
           FROM payment_attempts
           WHERE checkout_id = $1
           ORDER BY attempt_number
           FOR UPDATE
         `,
-        [checkoutId],
-      );
-      if (history.rows.some(({ state }) => ['CREATED', 'DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME'].includes(state))) {
-        throw new ConflictException('An existing payment attempt must be reconciled first.');
-      }
+            [checkoutId],
+          );
+          if (
+            history.rows.some(({ state }) =>
+              ['CREATED', 'DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME'].includes(state),
+            )
+          ) {
+            return err(
+              useCaseError(
+                'PAYMENT_RECONCILIATION_REQUIRED',
+                'An existing payment attempt must be reconciled first.',
+              ),
+            );
+          }
 
-      const chargeAttempts = history.rows.filter(({ state }) =>
-        PAYMENT_RELEVANT_STATES.includes(state),
-      );
-      const confirmedFailures = history.rows.filter(({ state }) =>
-        state === 'DECLINED' || state === 'ERROR',
-      ).length;
-      if (confirmedFailures >= 2 || chargeAttempts.length >= 2) {
-        throw new ConflictException('The permitted payment retry has already been used.');
-      }
-      if (
-        history.rows.some(({ state }) => ['APPROVED', 'VOIDED'].includes(state)) ||
-        checkout.state === 'PAID' ||
-        checkout.state === 'CANCELLED'
-      ) {
-        throw new ConflictException('Checkout is already closed for payment.');
-      }
+          const chargeAttempts = history.rows.filter(({ state }) =>
+            PAYMENT_RELEVANT_STATES.includes(state),
+          );
+          const confirmedFailures = history.rows.filter(
+            ({ state }) => state === 'DECLINED' || state === 'ERROR',
+          ).length;
+          if (confirmedFailures >= 2 || chargeAttempts.length >= 2) {
+            return err(
+              useCaseError(
+                'PAYMENT_RETRY_LIMIT_REACHED',
+                'The permitted payment retry has already been used.',
+              ),
+            );
+          }
+          if (
+            history.rows.some(({ state }) => ['APPROVED', 'VOIDED'].includes(state)) ||
+            checkout.state === 'PAID' ||
+            checkout.state === 'CANCELLED'
+          ) {
+            return err(
+              useCaseError('CHECKOUT_PAYMENT_CLOSED', 'Checkout is already closed for payment.'),
+            );
+          }
 
-      const attemptNumber = (history.rows.at(-1)?.attempt_number ?? 0) + 1;
-      if (attemptNumber > 10) {
-        throw new ConflictException('No further payment attempts are permitted.');
-      }
-      const reference = `pfl_${randomUUID()}`;
-      const inserted = await client.query<AttemptRow>(
-        `
+          const attemptNumber = (history.rows.at(-1)?.attempt_number ?? 0) + 1;
+          if (attemptNumber > 10) {
+            return err(
+              useCaseError(
+                'PAYMENT_ATTEMPT_LIMIT_REACHED',
+                'No further payment attempts are permitted.',
+              ),
+            );
+          }
+
+          const reference = `pfl_${randomUUID()}`;
+          const inserted = await client.query<AttemptRow>(
+            `
           INSERT INTO payment_attempts (
             checkout_id, attempt_number, state, idempotency_key_hash,
             request_fingerprint_hash, provider_reference, amount_cop, currency,
@@ -305,83 +374,87 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
           VALUES ($1, $2, 'PENDING', $3, $4, $5, $6, $7, now())
           RETURNING *
         `,
-        [
-          checkoutId,
-          attemptNumber,
-          idempotencyKeyHash,
-          requestFingerprintHash,
-          reference,
-          checkout.total_minor,
-          checkout.currency.trim(),
-        ],
-      );
-      const attempt = inserted.rows[0];
-      if (!attempt) throw new Error('Payment attempt was not persisted.');
+            [
+              checkoutId,
+              attemptNumber,
+              idempotencyKeyHash,
+              requestFingerprintHash,
+              reference,
+              checkout.total_minor,
+              checkout.currency.trim(),
+            ],
+          );
+          const attempt = inserted.rows[0];
+          if (!attempt) throw new Error('Payment attempt was not persisted.');
 
-      await client.query(
-        `
+          await client.query(
+            `
           UPDATE checkouts
           SET state = 'PAYMENT_PENDING', updated_at = now()
           WHERE id = $1 AND state IN ('RESERVED', 'PAYMENT_FAILED')
         `,
-        [checkoutId],
+            [checkoutId],
+          );
+
+          return ok({
+            attempt: this.toView(attempt),
+            replayed: false,
+            context: {
+              attemptId: attempt.id,
+              reference,
+              amountCop: Number(checkout.total_minor),
+              currency: checkout.currency.trim() as 'COP',
+              customerEmail: checkout.customer_email,
+            },
+          });
+        },
       );
 
-      return {
-        attempt: this.toView(attempt),
-        replayed: false,
-        context: {
-          attemptId: attempt.id,
-          reference,
-          amountCop: Number(checkout.total_minor),
-          currency: checkout.currency.trim() as 'COP',
-          customerEmail: checkout.customer_email,
-        },
-      };
-    });
-
-    if (prepared.replayed || !prepared.context) {
-      return { attempt: prepared.attempt, replayed: true };
-    }
-
-    let transaction: ProviderTransaction;
-    try {
-      transaction = await this.gateway.createTransaction({
-        acceptanceToken: dto.acceptanceToken,
-        personalDataAuthorizationToken: dto.personalDataAuthorizationToken,
-        amountCop: prepared.context.amountCop,
-        currency: prepared.context.currency,
-        customerEmail: prepared.context.customerEmail,
-        installments: dto.installments ?? 1,
-        paymentToken: dto.paymentToken,
-        reference: prepared.context.reference,
-      });
-    } catch (error) {
-      if (error instanceof PaymentGatewayConfigurationError) {
-        await this.markLocalFailure(prepared.context.attemptId);
-      } else if (error instanceof PaymentGatewayRejectedError) {
-        await this.markRejected(prepared.context.attemptId, error.httpStatus);
-      } else {
-        await this.markUnknown(prepared.context.attemptId);
+      if (!preparedResult.ok) return preparedResult;
+      const prepared = preparedResult.value;
+      if (prepared.replayed || !prepared.context) {
+        return ok({ attempt: prepared.attempt, replayed: true });
       }
-      return {
+
+      let transaction: ProviderTransaction;
+      try {
+        transaction = await this.gateway.createTransaction({
+          acceptanceToken: dto.acceptanceToken,
+          personalDataAuthorizationToken: dto.personalDataAuthorizationToken,
+          amountCop: prepared.context.amountCop,
+          currency: prepared.context.currency,
+          customerEmail: prepared.context.customerEmail,
+          installments: dto.installments ?? 1,
+          paymentToken: dto.paymentToken,
+          reference: prepared.context.reference,
+        });
+      } catch (error) {
+        if (error instanceof PaymentGatewayConfigurationError) {
+          await this.markLocalFailure(prepared.context.attemptId);
+        } else if (error instanceof PaymentGatewayRejectedError) {
+          await this.markRejected(prepared.context.attemptId, error.httpStatus);
+        } else {
+          await this.markUnknown(prepared.context.attemptId);
+        }
+        return ok({
+          attempt: await this.readAttempt(sessionId, checkoutId, prepared.context.attemptId),
+          replayed: false,
+        });
+      }
+
+      const disposition = await this.applyTransactionResult(
+        transaction,
+        new Date(),
+        prepared.context.attemptId,
+      );
+      if (disposition === 'MISMATCH') {
+        await this.markManualReview(prepared.context.attemptId);
+      }
+      return ok({
         attempt: await this.readAttempt(sessionId, checkoutId, prepared.context.attemptId),
         replayed: false,
-      };
-    }
-
-    const disposition = await this.applyTransactionResult(
-      transaction,
-      new Date(),
-      prepared.context.attemptId,
-    );
-    if (disposition === 'MISMATCH') {
-      await this.markManualReview(prepared.context.attemptId);
-    }
-    return {
-      attempt: await this.readAttempt(sessionId, checkoutId, prepared.context.attemptId),
-      replayed: false,
-    };
+      });
+    });
   }
 
   async getAttempt(
@@ -1187,6 +1260,18 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   private reviewIsDue(createdAt: Date): boolean {
     const thresholdSeconds = this.reviewThresholdSeconds();
     return thresholdSeconds > 0 && Date.now() - createdAt.getTime() >= thresholdSeconds * 1000;
+  }
+
+  private validateIdempotencyKey(idempotencyKey: string | undefined): Result<string, UseCaseError> {
+    if (!idempotencyKey || !IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+      return err(
+        useCaseError(
+          'INVALID_IDEMPOTENCY_KEY',
+          'Idempotency-Key must contain 16 to 128 permitted characters.',
+        ),
+      );
+    }
+    return ok(idempotencyKey);
   }
 
   private hash(value: string): string {

@@ -1,5 +1,6 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { Result } from '../core/result';
 
 export const DATABASE_POOL = Symbol('DATABASE_POOL');
 
@@ -26,6 +27,34 @@ export class DatabaseService implements OnModuleDestroy {
       return result;
     } catch (error) {
       await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async transactionResult<Value, Failure>(
+    work: (client: PoolClient) => Promise<Result<Value, Failure>>,
+  ): Promise<Result<Value, Failure>> {
+    const client = await this.pool.connect();
+    let transactionOpen = false;
+
+    try {
+      await client.query('BEGIN');
+      transactionOpen = true;
+      const result = await work(client);
+
+      if (!result.ok) {
+        await client.query('ROLLBACK');
+        transactionOpen = false;
+        return result;
+      }
+
+      await client.query('COMMIT');
+      transactionOpen = false;
+      return result;
+    } catch (error) {
+      if (transactionOpen) await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
