@@ -44,7 +44,7 @@ describe('ProductCatalog', () => {
     );
     expect(screen.getByText('8 disponibles')).toBeInTheDocument();
     expect(screen.getByText('Agotado')).toBeInTheDocument();
-    const buttons = screen.getAllByRole('button', { name: /Elegir producto/ });
+    const buttons = screen.getAllByRole('button', { name: /Pay with credit card/ });
     expect(buttons[1]).toBeDisabled();
     await user.click(buttons[0]);
     expect(onSelect).toHaveBeenCalledWith(available);

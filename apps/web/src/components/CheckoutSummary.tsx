@@ -1,5 +1,6 @@
 import { formatCop, formatDateTime } from '../app/format';
 import type { Checkout } from '../app/service-api';
+import type { ReactNode } from 'react';
 
 const CHECKOUT_STATE_LABELS: Record<Checkout['state'], string> = {
   RESERVED: 'Inventario reservado',
@@ -21,13 +22,15 @@ const PRODUCT_IMAGES: Record<string, string> = {
 
 interface CheckoutSummaryProps {
   checkout: Checkout;
+  children?: ReactNode;
 }
 
-export function CheckoutSummary({ checkout }: CheckoutSummaryProps) {
+export function CheckoutSummary({ checkout, children }: CheckoutSummaryProps) {
   const redacted = !checkout.customer.fullName || !checkout.customer.email;
 
   return (
-    <aside className="order-summary" aria-labelledby="summary-title">
+    <section className="payment-backdrop" aria-labelledby="summary-title">
+      <div className="payment-backdrop__back-layer">
       <div className="summary-topline">
         <div>
           <p className="eyebrow">Resumen de compra</p>
@@ -92,6 +95,10 @@ export function CheckoutSummary({ checkout }: CheckoutSummaryProps) {
           </p>
         </div>
       </div>
-    </aside>
+      </div>
+      <div aria-label="Confirmación y pago" className="payment-backdrop__front-layer" role="group">
+        {children}
+      </div>
+    </section>
   );
 }

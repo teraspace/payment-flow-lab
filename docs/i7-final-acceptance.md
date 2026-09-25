@@ -1,81 +1,50 @@
-# I7 final acceptance evidence
+# I7 audit and I8 acceptance remediation
 
-- Assessment date: 2026-09-25
-- Integrated baseline: `main` commit `11842e1` (PR #15)
-- Status: technical acceptance prepared; pending user validation and final handoff.
+- Audit date: 2026-09-25
+- Audited deployed baseline: `main` commit `a1a29d8` (PR #16)
+- Remediation branch: `codex/i8-checkout-acceptance`
+- Verdict: **FAIL — acceptance is not established yet.**
 
-## Scope and safety
+The audit treated the PDF's mandatory requirements as gates. It found seven failures and four items that could not be verified. I8 addresses the seven implementation/documentation gaps locally. The branch has not been deployed, so this does not change the application currently served by CloudFront. No sandbox payment was submitted and no AWS resource was changed during I8. The source challenge defines these criteria; this report records implementation evidence and remaining verification limits.
 
-This pass checked the public repository and deployed application without making a payment or changing AWS resources. It made only read-only HTTP requests to the deployed app/API. No card details, sandbox payment request, checkout mutation, or Terraform apply was performed. The earlier controlled sandbox flow remains documented in [the payment lifecycle](payment-lifecycle.md); that is prior evidence, not a new I7 payment.
+## Audit findings and remediation evidence
 
-The local API integration runner resets and drops only `payment_flow_lab_test` on loopback. It does not connect to the AWS database.
+| Requirement | I7 audit | I8 evidence | Current status |
+|---|---|---|---|
+| “Pay with credit card” opens a modal collecting card and delivery details | Fail: card input appeared after the delivery form | Product CTA now opens one accessible card-and-delivery modal. `CheckoutDetailsForm.spec.tsx` verifies consent and tokenization boundaries; local browser showed the modal at the target CSS viewport. | Remediated locally; live deploy pending |
+| Product/base/delivery amounts and payment action appear in a backdrop | Fail: summary and payment action were separate | `CheckoutSummary` contains both the price summary and payment panel in its backdrop; component tests cover the structure. | Remediated locally; live deploy pending |
+| Required five-screen sequence | Fail: only three progress stages | Progress now represents Producto → Tarjeta y entrega → Resumen → Resultado → Producto. App coverage includes terminal status and return states. | Remediated locally; live deploy pending |
+| Preserve unsubmitted progress across refresh | Fail: selected product and form values were in memory only | Product and contact/delivery draft are kept in `sessionStorage`; the added App test reloads the component and verifies those values return while card number is not persisted. | Remediated locally; live deploy pending |
+| Persist payment transaction as `PENDING` before provider call | Fail: initial state was `DISPATCHING` | A PostgreSQL integration assertion reads the row from inside the provider mock: state is `PENDING`, checkout is `PAYMENT_PENDING`, and the provider-response timestamp is still null. Provider call remains after SQL commit. | Remediated locally; API integration suite passes |
+| After a terminal result, return to the product catalog with refreshed inventory | Fail: result remained on checkout | Final status includes a return action; the App test verifies it clears the checkout URL and refetches products. An automatic return remains available. | Remediated locally; live deploy pending |
+| Put exact measured coverage in README | Fail: figures were only in the report | The README now lists current API and web suite counts and coverage percentages, plus the narrower payment-module exception. | Remediated locally |
 
-## Base rubric self-assessment
+The state change also separates **database consistency** from **domain idempotency**: PostgreSQL commits one local attempt before network dispatch; `dispatching` reports transport progress while the attempt's domain state is `PENDING`. Neither a SQL commit nor a provider reference promises exactly-once remote execution. If dispatch has an ambiguous outcome, the attempt becomes `UNKNOWN_OUTCOME`, retains the inventory hold, and is reconciled before another charge is allowed. Details are in [payment lifecycle](payment-lifecycle.md) and [API contract](api-contract.md).
 
-Evidence is present for all six base categories, supporting a **100/100-point technical self-assessment**. This is not an official score; only the evaluator can award points. No bonus points are included in the base assessment.
+## Latest local verification
 
-| Brief category | Points | I7 evidence | Assessment |
-|---|---:|---|---|
-| Complete README | 5 | This README documents the stack, clean setup, API/data model, lifecycle, deployment, decisions, scorecards, and public links. | Evidence present |
-| Images render fast and avoid UI/UX boundaries | 5 | The three same-origin SVG assets each returned `200` from CloudFront and were 679-774 bytes. The I5 scorecard records a local production-build Lighthouse median of 95 performance and 100 accessibility, plus no horizontal overflow at 1280px in Chromium. | Evidence present; mobile Lighthouse is emulated, not a physical-device result |
-| Complete card checkout onboarding flow | 20 | I4 sandbox evidence covers approval, decline, pending/unknown behavior, refresh recovery, and inventory/fulfillment outcomes. The deployed UI rendered the delivery step with `API conectado` and `Sandbox protegido`; the sandbox metadata route returned `200`. | Evidence present; the prior transaction smoke was not repeated during I7 |
-| API working correctly | 20 | Deployed liveness, readiness, catalog, OpenAPI UI, and sandbox metadata returned `200`; readiness reported `checks.database=ok`. The local API suite passed against PostgreSQL. | Evidence present |
-| More than 80% backend and frontend test coverage | 30 | The local Jest coverage run exceeded 80% in statements, branches, functions, and lines for both application aggregates; exact results are below. | Gate passed at application level |
-| App and API deployed to a cloud provider | 20 | The public CloudFront app returned `200`; its HTTP URL redirected to HTTPS; API readiness and catalog worked through the same origin, and the rendered UI reported an API connection. | Evidence present |
-
-### Measured coverage
+Coverage runs on the I8 branch on 2026-09-25:
 
 | Application | Suites / tests | Statements | Branches | Functions | Lines |
 |---|---:|---:|---:|---:|---:|
-| API | 10 / 88 | 89.68% | 81.95% | 94.24% | 91.01% |
-| Web | 8 / 76 | 94.81% | 91.20% | 91.22% | 96.61% |
+| Web | 8 / 76 | 89.19% | 83.56% | 86.76% | 90.34% |
+| API | 10 / 88 | 89.70% | 81.85% | 94.28% | 91.03% |
 
-The payment directory is a narrower exception: its branch coverage is 79.39%, and `payments.service.ts` is 74.89%. The brief asks for more than 80% backend and frontend coverage but does not require every directory or file to exceed 80%. The application-wide API and web gates pass; this exception remains disclosed in the [I5 scorecard](reliability-scorecard.md).
+Both application aggregates exceed the brief's 80% coverage requirement. The payment directory remains below 80% branch coverage at 79.31%; `payments.service.ts` is at 74.89%. The README now presents these exact measurements.
 
-## Verification run
+The local browser was checked at CSS viewports of **375 × 667** (portrait) and **667 × 375** (landscape), matching the logical viewport dimensions of a 750 × 1334 / 1334 × 750 physical screen at DPR 2. Neither layout had horizontal overflow; the card-and-delivery dialog stayed within the viewport and scrolls internally to its submit action. The browser runtime used DPR 1.1, so this is a responsive viewport simulation, not a physical iPhone or hardware/DPR validation. No browser console errors or Vite error overlay appeared.
 
-Local commands completed successfully on Node.js 26.7.0 and npm 11.19.0:
+`npm run test:coverage --workspace @payment-flow-lab/web` passed 8 suites / 76 tests. `npm run test:api -- --coverage` passed 10 suites / 88 tests against local PostgreSQL, applied all migrations including the I8 migration, and rolled them back. `npm run lint`, `npm run typecheck`, and `npm run build` also passed. The API test runner targets only `payment_flow_lab_test` on loopback; it did not connect to AWS.
 
-- `npm ci` — completed; installed 1,011 packages; npm reported zero vulnerabilities.
-- `npm audit --audit-level=moderate` — zero vulnerabilities.
-- `npm run lint`, `npm run typecheck`, and `npm run build` — passed.
-- `npm run test:coverage --workspace @payment-flow-lab/web` — 8 suites, 76 tests passed; thresholds passed.
-- `npm run test:api -- --coverage` — 10 suites, 88 tests passed against local PostgreSQL; migrations were applied and rolled back; thresholds passed.
-- `terraform fmt -check -recursive .`, `terraform init -backend=false -input=false -lockfile=readonly`, and `terraform validate` — passed with Terraform 1.5.7.
+## Items still not verified
 
-The merged [`main` commit `11842e1`](https://github.com/teraspace/payment-flow-lab/commit/11842e1669d81103f0da1a7e0e29d1450a33bff5) also has successful `quality`, `database-migrations`, and `infrastructure` jobs in [GitHub Actions run 36153694291](https://github.com/teraspace/payment-flow-lab/actions/runs/36153694291). The `main` branch protection requires these checks and PR-based changes.
-
-Read-only production checks on 2026-09-25:
-
-| Request | Result |
+| Item | Why it remains open |
 |---|---|
-| `GET /` | [`200`](https://d2ump7odi96dfi.cloudfront.net/) |
-| `GET /api/v1/health/live` | [`200`](https://d2ump7odi96dfi.cloudfront.net/api/v1/health/live) |
-| `GET /api/v1/health/ready` | [`200`](https://d2ump7odi96dfi.cloudfront.net/api/v1/health/ready), database `ok` |
-| `GET /api/v1/products` | [`200`](https://d2ump7odi96dfi.cloudfront.net/api/v1/products) |
-| `GET /api/v1/docs` | [`200`](https://d2ump7odi96dfi.cloudfront.net/api/v1/docs) |
-| `GET /api/v1/payment-configuration/acceptance-documents` | [`200`](https://d2ump7odi96dfi.cloudfront.net/api/v1/payment-configuration/acceptance-documents) |
-| HTTP viewer request | `301` redirect to HTTPS |
+| Sandbox provider transaction after I8 | No payment was submitted in this pass. The final payment action must remain a user handoff; local contract/integration tests are not proof of a live provider transaction. Earlier sandbox evidence is historical and documented in [payment lifecycle](payment-lifecycle.md). |
+| Physical iPhone SE 2020 / DPR and landscape behavior | The local CSS viewport was simulated in portrait only; no physical device test was run. |
+| Solution not shared with other candidates | Repository and runtime checks cannot establish private sharing behavior. |
+| Official minimum score of 100 | Only the challenge evaluator can award points. The audit gaps and unverified live gate mean no 100-point claim is made. |
 
-## Repository and delivery checks
+## Deployment and release gate
 
-- GitHub confirms [`teraspace/payment-flow-lab`](https://github.com/teraspace/payment-flow-lab) is public and uses `main` as its default branch.
-- PRs #1-#15 are merged; no open PRs existed at the start of I7.
-- The `main` protection requires a pull request and the three CI checks above.
-- A targeted scan of 377 reachable Git blobs across fetched branches found no prohibited company-name string or high-confidence credential patterns (staging-key shapes, AWS access-key IDs, private-key headers, or GitHub token shapes). This pattern scan is useful evidence, not a guarantee equivalent to a dedicated secret-scanning product.
-
-## Bonus evidence and limits
-
-- HTTPS is active and HTTP redirects to HTTPS. The API responses include Helmet security headers, including CSP, HSTS, `X-Content-Type-Options`, and `X-Frame-Options`; the static CloudFront HTML response did not include those headers. Do not claim the full OWASP/HTTPS/security-headers bonus based on partial coverage.
-- Responsive evidence includes the 412x823 emulated Lighthouse viewport and a 1280px Chromium overflow check. Firefox, Safari, physical devices, and manual screen-reader review were not measured; the cross-browser bonus is not established.
-- The payment gateway is isolated behind the `PAYMENT_GATEWAY` contract and `HttpPaymentGateway` adapter. That supports a ports-and-adapters claim, but bonus scoring is evaluator judgment.
-- No explicit Railway-Oriented Programming `Result`/`Either` flow was identified, so no ROP bonus is claimed.
-- The I5 Lighthouse results describe the optimized local build, not CloudFront performance. Do not present them as deployed-site measurements.
-
-## Remaining notes and gate
-
-- A user-facing cancellation control and the precise business remedy for late approval after inventory release remain documented open decisions; the current path records a fulfillment exception and requires human resolution.
-- AWS helper scripts still default to the older `payment-flow-lab` CLI profile when `AWS_PROFILE` is unset. Before any future AWS mutation, set `AWS_PROFILE=payment-flow-lab-deployer` in that terminal. No AWS mutation was needed for I7.
-- MFA remains deferred at the user's request; it is not represented as complete.
-
-The technical evidence is assembled. I7 is not closed until the user validates this report and the final handoff.
+The deployed app and API checks recorded during I7 describe the pre-I8 `main` version; they do not verify this remediation. The PR and hosted CI checks for I8 must pass, the user must review the change, and a reviewed deployment plan must be approved before updating AWS. A fresh live smoke should then verify the deployed five-stage flow and API. Any sandbox payment submission remains a user-operated handoff. No Terraform apply or production mutation was part of this branch's verification.

@@ -59,6 +59,11 @@ class PaymentAttemptResponse implements PaymentAttemptView {
   })
   state!: PaymentAttemptView['state'];
 
+  @ApiProperty({
+    description: 'True while PENDING is persisted and the provider request is in flight.',
+  })
+  dispatching!: boolean;
+
   @ApiProperty({ minimum: 0, description: 'Whole Colombian pesos.' })
   amountCop!: number;
 

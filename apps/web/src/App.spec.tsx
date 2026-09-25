@@ -6,6 +6,13 @@ jest.mock('./app/service-api', () => ({
   useGetReadinessQuery: jest.fn(),
   useInitializeGuestSessionMutation: jest.fn(),
   useRecoverCheckoutMutation: jest.fn(),
+  loadAcceptanceDocumentsFromApi: jest.fn(),
+}));
+
+jest.mock('./app/sandbox-payment', () => ({
+  getSandboxPaymentConfiguration: jest.fn(),
+  tokenizeSandboxCard: jest.fn(),
+  SANDBOX_TEST_CARDS: { approved: '4242424242424242', declined: '4111111111111111' },
 }));
 
 jest.mock('./components/PaymentPanel', () => ({
@@ -22,6 +29,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from 'jest-axe';
 import * as serviceApi from './app/service-api';
+import * as sandboxPayment from './app/sandbox-payment';
 import { App } from './App';
 import { makeAttempt, makeCheckout, makeProduct } from './test-fixtures';
 
@@ -63,10 +71,18 @@ function configureHooks() {
 
 function fillDeliveryForm(user: ReturnType<typeof userEvent.setup>) {
   return (async () => {
+    await screen.findByLabelText(/Leí y acepto/);
     await user.type(screen.getByLabelText('Nombre completo'), 'Ada Lovelace');
     await user.type(screen.getByLabelText('Correo electrónico'), 'ada@example.test');
     await user.type(screen.getByLabelText('Persona que recibe'), 'Ada Lovelace');
     await user.type(screen.getByLabelText('Dirección completa'), 'Calle 1 #2-3');
+    await user.type(screen.getByLabelText('Nombre en la tarjeta'), 'Ada Test');
+    await user.type(screen.getByLabelText('Número de tarjeta de prueba'), '4242424242424242');
+    await user.selectOptions(screen.getByLabelText('Mes'), '12');
+    await user.type(screen.getByLabelText('Año'), '40');
+    await user.type(screen.getByLabelText('CVC'), '123');
+    await user.click(screen.getByLabelText(/Leí y acepto/));
+    await user.click(screen.getByLabelText(/Autorizo el tratamiento/));
   })();
 }
 
@@ -90,6 +106,17 @@ describe('App purchase flow', () => {
     refetchProducts = jest.fn().mockResolvedValue({});
     scene.productQuery.refetch = refetchProducts;
     configureHooks();
+    (serviceApi.loadAcceptanceDocumentsFromApi as jest.Mock).mockResolvedValue({
+      acceptanceToken: 'sandbox-acceptance-token',
+      acceptanceUrl: 'https://provider.example.test/privacy.pdf',
+      personalDataAuthorizationToken: 'sandbox-data-token',
+      personalDataAuthorizationUrl: 'https://provider.example.test/data.pdf',
+    });
+    (sandboxPayment.getSandboxPaymentConfiguration as jest.Mock).mockReturnValue({
+      ready: true,
+      configuration: { environment: 'test' },
+    });
+    (sandboxPayment.tokenizeSandboxCard as jest.Mock).mockResolvedValue('tok_test_opaque');
   });
 
   it('starts a guest session and presents the product catalog', async () => {
@@ -137,18 +164,22 @@ describe('App purchase flow', () => {
   it('selects a product and creates a checkout from the entered details', async () => {
     const user = userEvent.setup();
     const checkout = makeCheckout();
-    createCheckout = jest.fn(() => ({ unwrap: () => Promise.resolve(checkout) }));
+    createCheckout = jest.fn(() => ({
+      unwrap: () => {
+        scene.checkoutQuery = { data: checkout, isLoading: false, isError: false };
+        return Promise.resolve(checkout);
+      },
+    }));
     configureHooks();
-    scene.checkoutQuery = { data: checkout, isLoading: false, isError: false };
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /Elegir producto/ }));
-    expect(screen.getByRole('heading', { name: '¿A dónde lo enviamos?' })).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: /Pay with credit card/ }));
+    expect(screen.getByRole('heading', { name: 'Pay with credit card' })).toBeInTheDocument();
     await fillDeliveryForm(user);
     window.sessionStorage.setItem('pfl.checkout-command.v1', 'checkout-command-reused-01');
     jest.spyOn(window.sessionStorage.__proto__, 'removeItem').mockImplementation(() => {
       throw new Error('storage cleanup denied');
     });
-    await user.click(screen.getByRole('button', { name: /Revisar y continuar/ }));
+    await user.click(screen.getByRole('button', { name: /Continuar al resumen/ }));
     expect(await screen.findByTestId('payment-panel')).toHaveAttribute('data-can-start', 'true');
     expect(createCheckout).toHaveBeenCalledWith(expect.objectContaining({
       idempotencyKey: 'checkout-command-reused-01',
@@ -161,23 +192,30 @@ describe('App purchase flow', () => {
     expect(window.location.search).toContain(checkout.checkoutId);
     expect(window.sessionStorage.getItem('pfl.checkout-command.v1')).toBe('checkout-command-reused-01');
     expect(resetCheckoutCreation).toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it('recovers after an ambiguous checkout-creation response with the same command key', async () => {
     const user = userEvent.setup();
     const recovered = makeCheckout({ checkoutId: 'e16f63ce-72f2-4d1f-a183-92280f91d7ec' });
     createCheckout = jest.fn(() => ({ unwrap: () => Promise.reject(new Error('network timeout')) }));
     recoverCheckout = jest.fn(() => ({ unwrap: () => Promise.resolve(recovered) }));
-    scene.checkoutQuery = { data: recovered, isLoading: false, isError: false };
+    scene.checkoutQuery = { data: undefined, isLoading: false, isError: false };
+    const resolveRecovery = recoverCheckout;
+    recoverCheckout = jest.fn(() => ({
+      unwrap: () => {
+        scene.checkoutQuery = { data: recovered, isLoading: false, isError: false };
+        return resolveRecovery().unwrap();
+      },
+    }));
     configureHooks();
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /Elegir producto/ }));
+    await user.click(await screen.findByRole('button', { name: /Pay with credit card/ }));
     await fillDeliveryForm(user);
-    await user.click(screen.getByRole('button', { name: /Revisar y continuar/ }));
+    await user.click(screen.getByRole('button', { name: /Continuar al resumen/ }));
     await screen.findByTestId('payment-panel');
     expect(recoverCheckout).toHaveBeenCalledWith(expect.any(String));
     expect(resetCheckoutRecovery).toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it.each([
     [410, 'La clave anterior venció. Vuelve a enviar los datos para iniciar una reserva nueva.'],
@@ -189,12 +227,12 @@ describe('App purchase flow', () => {
     recoverCheckout = jest.fn(() => ({ unwrap: () => Promise.reject({ status }) }));
     configureHooks();
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /Elegir producto/ }));
+    await user.click(await screen.findByRole('button', { name: /Pay with credit card/ }));
     await fillDeliveryForm(user);
-    await user.click(screen.getByRole('button', { name: /Revisar y continuar/ }));
+    await user.click(screen.getByRole('button', { name: /Continuar al resumen/ }));
     expect(await screen.findByRole('alert')).toHaveTextContent(message);
-    expect(screen.getByRole('heading', { name: '¿A dónde lo enviamos?' })).toBeInTheDocument();
-  });
+    expect(screen.getByRole('heading', { name: 'Pay with credit card' })).toBeInTheDocument();
+  }, 15_000);
 
   it('does not send a checkout when session storage cannot persist an idempotency key', async () => {
     const user = userEvent.setup();
@@ -202,12 +240,40 @@ describe('App purchase flow', () => {
       throw new Error('storage denied');
     });
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /Elegir producto/ }));
+    await user.click(await screen.findByRole('button', { name: /Pay with credit card/ }));
     await fillDeliveryForm(user);
-    await user.click(screen.getByRole('button', { name: /Revisar y continuar/ }));
+    await user.click(screen.getByRole('button', { name: /Continuar al resumen/ }));
     expect(await screen.findByRole('alert')).toHaveTextContent('no enviamos la reserva');
     expect(createCheckout).not.toHaveBeenCalled();
   });
+
+  it('restores unsubmitted contact and delivery fields after a page reload without saving card data', async () => {
+    const user = userEvent.setup();
+    const resumableProduct = makeProduct({ id: 'e16f63ce-72f2-4d1f-a183-92280f91d7ec' });
+    scene.productQuery = { data: [resumableProduct], isLoading: false, isError: false, refetch: refetchProducts };
+    configureHooks();
+    const firstPage = render(<App />);
+    await user.click(await screen.findByRole('button', { name: /Pay with credit card/ }));
+    await screen.findByLabelText(/Leí y acepto/);
+    await user.type(screen.getByLabelText('Nombre completo'), 'Ada Lovelace');
+    await user.type(screen.getByLabelText('Correo electrónico'), 'ada@example.test');
+    await user.type(screen.getByLabelText('Persona que recibe'), 'Ada Lovelace');
+    await user.type(screen.getByLabelText('Dirección completa'), 'Calle 1 #2-3');
+    await user.type(screen.getByLabelText('Número de tarjeta de prueba'), '4242424242424242');
+
+    const savedDraft = window.sessionStorage.getItem('pfl.checkout-draft.v1');
+    expect(savedDraft).toContain('Ada Lovelace');
+    expect(savedDraft).not.toContain('4242424242424242');
+    firstPage.unmount();
+
+    render(<App />);
+    expect(await screen.findByRole('dialog', { name: 'Pay with credit card' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Nombre completo')).toHaveValue('Ada Lovelace');
+    expect(screen.getByLabelText('Correo electrónico')).toHaveValue('ada@example.test');
+    expect(screen.getByLabelText('Dirección completa')).toHaveValue('Calle 1 #2-3');
+    expect(screen.getByLabelText('Número de tarjeta de prueba')).toHaveValue('');
+    expect(createCheckout).not.toHaveBeenCalled();
+  }, 15_000);
 
   it('recovers a persisted checkout command after reload', async () => {
     window.sessionStorage.setItem('pfl.checkout-command.v1', 'checkout-command-000001');
@@ -322,7 +388,18 @@ describe('App purchase flow', () => {
         : { data: undefined, isLoading: false, isError: true, error: { status: 404 }, isSuccess: false };
       configureHooks();
       const { unmount } = render(<App />);
-      await waitFor(() => expect(screen.getByTestId('payment-panel')).toHaveAttribute('data-can-start', String(allowed)));
+      const terminal = ['PAID', 'PAYMENT_FAILED', 'CANCELLED', 'EXPIRED', 'FULFILLMENT_EXCEPTION'].includes(checkout.state) ||
+        ['APPROVED', 'DECLINED', 'ERROR', 'VOIDED'].includes(attempt?.state ?? '');
+      if (terminal) {
+        expect(await screen.findByText('Paso 4 de 5 · Resultado final')).toBeInTheDocument();
+        if (allowed) {
+          expect(screen.getByRole('button', { name: 'Reintentar con una nueva tarjeta de prueba' })).toBeInTheDocument();
+        } else {
+          expect(screen.queryByRole('button', { name: 'Reintentar con una nueva tarjeta de prueba' })).not.toBeInTheDocument();
+        }
+      } else {
+        await waitFor(() => expect(screen.getByTestId('payment-panel')).toHaveAttribute('data-can-start', String(allowed)));
+      }
       unmount();
     }
   });
@@ -337,5 +414,25 @@ describe('App purchase flow', () => {
     await user.click(await screen.findByRole('button', { name: 'Actualizar el estado del pedido' }));
     expect(refetchCheckout).toHaveBeenCalledTimes(1);
     expect(refetchAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns from a terminal payment result to the catalog with refreshed stock', async () => {
+    const user = userEvent.setup();
+    const checkout = makeCheckout({
+      state: 'PAID',
+      reservation: { state: 'COMMITTED', expiresAt: '2026-10-01T12:00:00.000Z' },
+    });
+    window.history.replaceState(null, '', `/?checkout=${checkout.checkoutId}`);
+    scene.checkoutQuery = { data: checkout, isLoading: false, isError: false };
+    configureHooks();
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Pago aprobado en sandbox' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Ir al catálogo con inventario actualizado/ }));
+
+    expect(await screen.findByRole('heading', { name: 'Compra algo que te guste.' })).toBeInTheDocument();
+    expect(window.location.search).toBe('');
+    expect(refetchProducts).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('navigation', { name: 'Progreso de compra' })).toHaveTextContent('Producto');
   });
 });
