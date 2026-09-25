@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Headers,
   HttpCode,
   Param,
@@ -22,6 +23,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { Request, Response } from 'express';
+import { ProviderAcceptanceDocuments } from './payment-gateway.contract';
 import {
   GUEST_SESSION_COOKIE,
   GuestSessionsService,
@@ -29,6 +31,7 @@ import {
 import { CreatePaymentAttemptDto } from './dto/create-payment-attempt.dto';
 import { PaymentAttemptView } from './payment-attempt.view';
 import { PaymentsService } from './payments.service';
+import { TokenizeSandboxCardDto } from './dto/tokenize-sandbox-card.dto';
 
 class PaymentAttemptResponse implements PaymentAttemptView {
   @ApiProperty({ format: 'uuid' })
@@ -83,6 +86,43 @@ export class PaymentsController {
     private readonly sessions: GuestSessionsService,
   ) {}
 
+  @Get('payment-configuration/acceptance-documents')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary: 'Load the current sandbox acceptance documents for the checkout UI',
+  })
+  @ApiOkResponse({
+    description:
+      'Acceptance tokens and HTTPS document links fetched using the configured sandbox public key.',
+  })
+  @ApiResponse({ status: 503, description: 'Sandbox acceptance documents are unavailable.' })
+  async acceptanceDocuments(): Promise<ProviderAcceptanceDocuments> {
+    return this.payments.getAcceptanceDocuments();
+  }
+
+  @Get('payment-configuration/tokenization-key')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({ summary: 'Load the current test-only card-encryption key' })
+  @ApiOkResponse({ schema: { example: { publicKey: 'sandbox-public-encryption-key' } } })
+  @ApiResponse({ status: 503, description: 'Sandbox tokenization is unavailable.' })
+  async tokenizationKey(): Promise<{ publicKey: string }> {
+    return { publicKey: await this.payments.getTokenizationPublicKey() };
+  }
+
+  @Post('payment-configuration/card-tokens')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary: 'Relay browser-encrypted card data to the test provider for tokenization',
+  })
+  @ApiCreatedResponse({ schema: { example: { paymentToken: 'tok_test_example' } } })
+  @ApiResponse({ status: 400, description: 'The sandbox rejected the test card.' })
+  @ApiResponse({ status: 503, description: 'Sandbox tokenization is unavailable.' })
+  async tokenizeCard(
+    @Body() dto: TokenizeSandboxCardDto,
+  ): Promise<{ paymentToken: string }> {
+    return { paymentToken: await this.payments.tokenizeEncryptedCard(dto.payload) };
+  }
+
   @Post('checkouts/:checkoutId/payment-attempts')
   @HttpCode(201)
   @ApiOperation({
@@ -122,6 +162,21 @@ export class PaymentsController {
     );
     response.status(result.replayed ? 200 : 201);
     return result.attempt;
+  }
+
+  @Get('checkouts/:checkoutId/payment-attempts/latest')
+  @ApiOperation({ summary: 'Read and reconcile the latest payment attempt after refresh' })
+  @ApiCookieAuth('guest-session')
+  @ApiOkResponse({ type: PaymentAttemptResponse })
+  @ApiUnauthorizedResponse({ description: 'Guest session is missing or expired.' })
+  async getLatestAttempt(
+    @Req() request: Request,
+    @Param('checkoutId', new ParseUUIDPipe({ version: '4' })) checkoutId: string,
+  ): Promise<PaymentAttemptResponse> {
+    const sessionId = await this.sessions.requireSessionId(
+      request.cookies?.[GUEST_SESSION_COOKIE],
+    );
+    return this.payments.getLatestAttempt(sessionId, checkoutId);
   }
 
   @Get('checkouts/:checkoutId/payment-attempts/:attemptId')

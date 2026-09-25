@@ -35,6 +35,9 @@ describe('payment lifecycle API (PostgreSQL)', () => {
   };
 
   const gateway: jest.Mocked<PaymentGateway> = {
+    getAcceptanceDocuments: jest.fn(),
+    getTokenizationPublicKey: jest.fn(),
+    tokenizeEncryptedCard: jest.fn(),
     createTransaction: jest.fn(),
     getTransaction: jest.fn(),
   };
@@ -105,6 +108,14 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       if (!transaction) throw new Error('Unknown provider transaction in test fixture.');
       return { ...transaction, status: currentStatuses.get(id) ?? transaction.status };
     });
+    gateway.getAcceptanceDocuments.mockResolvedValue({
+      acceptanceToken: 'sandbox-terms-token',
+      acceptanceUrl: 'https://documents.example.test/terms.pdf',
+      personalDataAuthorizationToken: 'sandbox-privacy-token',
+      personalDataAuthorizationUrl: 'https://documents.example.test/privacy.pdf',
+    });
+    gateway.getTokenizationPublicKey.mockResolvedValue('sandbox-public-encryption-key');
+    gateway.tokenizeEncryptedCard.mockResolvedValue('tok_test_sandbox-card-token-0001');
 
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(PAYMENT_GATEWAY)
@@ -124,6 +135,9 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     transactionSequence = 0;
     gateway.createTransaction.mockClear();
     gateway.getTransaction.mockClear();
+    gateway.getAcceptanceDocuments.mockClear();
+    gateway.getTokenizationPublicKey.mockClear();
+    gateway.tokenizeEncryptedCard.mockClear();
     await database.query(`
       TRUNCATE payment_event_receipts, fulfillments, payment_attempts,
                idempotency_records, reservations, checkout_items, checkouts,
@@ -144,6 +158,47 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       WHERE sku IN ('desk-notebook', 'urban-bottle', 'canvas-tote');
     `);
     cookie = await initializeSession();
+  });
+
+  it('serves acceptance documents through the local API for browser compatibility', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/acceptance-documents')
+      .expect(200)
+      .expect({
+        acceptanceToken: 'sandbox-terms-token',
+        acceptanceUrl: 'https://documents.example.test/terms.pdf',
+        personalDataAuthorizationToken: 'sandbox-privacy-token',
+        personalDataAuthorizationUrl: 'https://documents.example.test/privacy.pdf',
+      });
+    expect(gateway.getAcceptanceDocuments).toHaveBeenCalledTimes(1);
+  });
+
+  it('relays only a compact encrypted card payload for sandbox tokenization', async () => {
+    const encryptedPayload =
+      'eyJhbGciOiJSU0EtT0FFUC0yNTYifQ.dGVzdC1rZXk.dGVzdC1pdg.dGVzdC1jaXBoZXJ0ZXh0.dGVzdC10YWc';
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/tokenization-key')
+      .expect('Cache-Control', 'no-store')
+      .expect(200)
+      .expect({ publicKey: 'sandbox-public-encryption-key' });
+    await request(app.getHttpServer())
+      .post('/api/v1/payment-configuration/card-tokens')
+      .send({ payload: encryptedPayload })
+      .expect('Cache-Control', 'no-store')
+      .expect(201)
+      .expect({ paymentToken: 'tok_test_sandbox-card-token-0001' });
+
+    expect(gateway.getTokenizationPublicKey).toHaveBeenCalledTimes(1);
+    expect(gateway.tokenizeEncryptedCard).toHaveBeenCalledWith(encryptedPayload);
+  });
+
+  it('rejects plaintext card-shaped data at the tokenization relay', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/payment-configuration/card-tokens')
+      .send({ payload: '4242424242424242' })
+      .expect(400);
+
+    expect(gateway.tokenizeEncryptedCard).not.toHaveBeenCalled();
   });
 
   afterAll(async () => {

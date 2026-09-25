@@ -9,9 +9,10 @@ import {
 
 describe('HttpPaymentGateway', () => {
   const config = new ConfigService({
-    PAYMENT_GATEWAY_BASE_URL: 'https://gateway.example.test/v1',
-    PAYMENT_GATEWAY_PRIVATE_KEY: 'private-test-key',
-    PAYMENT_GATEWAY_INTEGRITY_SECRET: 'integrity-test-secret',
+    PAYMENT_GATEWAY_BASE_URL: 'https://sandbox.example.test/v1',
+    PAYMENT_GATEWAY_PUBLIC_KEY: 'pub_test_public-key',
+    PAYMENT_GATEWAY_PRIVATE_KEY: 'prv_test_private-key',
+    PAYMENT_GATEWAY_INTEGRITY_SECRET: 'test_integrity_secret',
   });
 
   function gateway(fetcher: jest.Mock): HttpPaymentGateway {
@@ -50,11 +51,11 @@ describe('HttpPaymentGateway', () => {
     });
     expect(fetcher).toHaveBeenCalledTimes(1);
     const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://gateway.example.test/v1/transactions');
+    expect(url).toBe('https://sandbox.example.test/v1/transactions');
     expect(init.method).toBe('POST');
     expect(init.redirect).toBe('error');
     expect(new Headers(init.headers).get('authorization')).toBe(
-      'Bearer private-test-key',
+      'Bearer prv_test_private-key',
     );
     const requestBody = JSON.parse(String(init.body)) as Record<string, unknown>;
     expect(requestBody).toMatchObject({
@@ -71,6 +72,123 @@ describe('HttpPaymentGateway', () => {
       reference: 'attempt-ref-001',
     });
     expect(requestBody.signature).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('loads acceptance tokens server-side for the browser checkout', async () => {
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(200, {
+        data: {
+          presigned_acceptance: {
+            acceptance_token: 'terms-token',
+            permalink: 'https://documents.example.test/terms.pdf',
+          },
+          presigned_personal_data_auth: {
+            acceptance_token: 'privacy-token',
+            permalink: 'https://documents.example.test/privacy.pdf',
+          },
+        },
+      }),
+    );
+
+    await expect(gateway(fetcher).getAcceptanceDocuments()).resolves.toEqual({
+      acceptanceToken: 'terms-token',
+      acceptanceUrl: 'https://documents.example.test/terms.pdf',
+      personalDataAuthorizationToken: 'privacy-token',
+      personalDataAuthorizationUrl: 'https://documents.example.test/privacy.pdf',
+    });
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://sandbox.example.test/v1/merchants/info');
+    expect(init.method).toBe('GET');
+    expect(new Headers(init.headers).get('x-merchant-public-key')).toBe(
+      'pub_test_public-key',
+    );
+  });
+
+  it('loads the encryption key through the configured sandbox public key', async () => {
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(200, { data: { publicKey: 'sandbox-encryption-key' } }),
+    );
+
+    await expect(gateway(fetcher).getTokenizationPublicKey()).resolves.toBe(
+      'sandbox-encryption-key',
+    );
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://sandbox.example.test/v1/tokens/keys/tokenization');
+    expect(init.method).toBe('GET');
+    expect(new Headers(init.headers).get('authorization')).toBe(
+      'Bearer pub_test_public-key',
+    );
+  });
+
+  it('relays only encrypted card data and accepts the matching sandbox token prefix', async () => {
+    const encryptedPayload =
+      'eyJhbGciOiJSU0EtT0FFUC0yNTYifQ.dGVzdC1rZXk.dGVzdC1pdg.dGVzdC1jaXBoZXJ0ZXh0.dGVzdC10YWc';
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(201, { data: { id: 'tok_test_card-token-001' } }),
+    );
+
+    await expect(gateway(fetcher).tokenizeEncryptedCard(encryptedPayload)).resolves.toBe(
+      'tok_test_card-token-001',
+    );
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://sandbox.example.test/v1/tokens/cards');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('authorization')).toBe(
+      'Bearer pub_test_public-key',
+    );
+    expect(JSON.parse(String(init.body))).toEqual({ payload: encryptedPayload });
+    expect(String(init.body)).not.toContain('4242424242424242');
+  });
+
+  it('rejects a token from a mismatched sandbox profile', async () => {
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(201, { data: { id: 'tok_stagtest_other-profile' } }),
+    );
+
+    await expect(
+      gateway(fetcher).tokenizeEncryptedCard(
+        'eyJhbGciOiJSU0EtT0FFUC0yNTYifQ.dGVzdC1rZXk.dGVzdC1pdg.dGVzdC1jaXBoZXJ0ZXh0.dGVzdC10YWc',
+      ),
+    ).rejects.toBeInstanceOf(PaymentGatewayUnavailableError);
+  });
+
+  it('accepts the challenge staging sandbox only with its test credential profile', async () => {
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(201, {
+        data: {
+          id: 'provider-tx-staging-001',
+          reference: 'attempt-ref-staging-001',
+          amount_in_cents: 4_200_000,
+          currency: 'COP',
+          status: 'PENDING',
+        },
+      }),
+    );
+    const stagingGateway = new HttpPaymentGateway(
+      new ConfigService({
+        PAYMENT_GATEWAY_ENVIRONMENT: 'test',
+        PAYMENT_GATEWAY_BASE_URL: 'https://api-sandbox.co.uat.provider.dev/v1',
+        PAYMENT_GATEWAY_PUBLIC_KEY: 'pub_stagtest_public-key',
+        PAYMENT_GATEWAY_PRIVATE_KEY: 'prv_stagtest_private-key',
+        PAYMENT_GATEWAY_INTEGRITY_SECRET: 'stagtest_integrity_secret',
+      }),
+      fetcher as unknown as typeof fetch,
+    );
+
+    await expect(stagingGateway.createTransaction({
+      acceptanceToken: 'acceptance-token',
+      personalDataAuthorizationToken: 'personal-data-acceptance-token',
+      amountCop: 42_000,
+      currency: 'COP',
+      customerEmail: 'buyer@example.test',
+      installments: 1,
+      paymentToken: 'tok_stagtest_card-token',
+      reference: 'attempt-ref-staging-001',
+    })).resolves.toMatchObject({ status: 'PENDING' });
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://api-sandbox.co.uat.provider.dev/v1/transactions',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 
   it('treats documented authentication and payload errors as a confirmed rejection', async () => {
@@ -137,9 +255,10 @@ describe('HttpPaymentGateway', () => {
     );
     const insecure = new HttpPaymentGateway(
       new ConfigService({
-        PAYMENT_GATEWAY_BASE_URL: 'http://gateway.example.test/v1',
-        PAYMENT_GATEWAY_PRIVATE_KEY: 'private-test-key',
-        PAYMENT_GATEWAY_INTEGRITY_SECRET: 'integrity-test-secret',
+        PAYMENT_GATEWAY_BASE_URL: 'http://sandbox.example.test/v1',
+        PAYMENT_GATEWAY_PUBLIC_KEY: 'pub_test_public-key',
+        PAYMENT_GATEWAY_PRIVATE_KEY: 'prv_test_private-key',
+        PAYMENT_GATEWAY_INTEGRITY_SECRET: 'test_integrity_secret',
       }),
       fetcher as unknown as typeof fetch,
     );
@@ -182,7 +301,7 @@ describe('HttpPaymentGateway', () => {
     });
     const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(
-      'https://gateway.example.test/v1/transactions/provider%2Ftx-001',
+      'https://sandbox.example.test/v1/transactions/provider%2Ftx-001',
     );
     expect(init.method).toBe('GET');
     expect(init.body).toBeUndefined();

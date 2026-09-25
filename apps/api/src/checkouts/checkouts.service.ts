@@ -310,6 +310,39 @@ export class CheckoutsService {
     });
   }
 
+  async recover(
+    sessionId: string,
+    idempotencyKey: string | undefined,
+  ): Promise<CheckoutView> {
+    if (!idempotencyKey || !IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+      throw new BadRequestException(
+        'Idempotency-Key must contain 16 to 128 permitted characters.',
+      );
+    }
+
+    return this.database.transaction(async (client) => {
+      await this.reservationExpiration.releaseExpired(client);
+      const result = await client.query<ExistingIdempotencyRow>(
+        `
+          SELECT fingerprint_hash, checkout_id
+          FROM idempotency_records
+          WHERE guest_session_id = $1
+            AND operation = $2
+            AND idempotency_key_hash = $3
+          FOR UPDATE
+        `,
+        [sessionId, CREATE_CHECKOUT_OPERATION, this.hash(idempotencyKey)],
+      );
+      const record = result.rows[0];
+      if (!record) throw new NotFoundException('Checkout not found for this command.');
+      if (record.fingerprint_hash === null) {
+        throw new GoneException('This checkout replay window has expired.');
+      }
+
+      return this.loadCheckout(client, sessionId, record.checkout_id);
+    });
+  }
+
   private async reserveProduct(
     client: PoolClient,
     productId: string,
