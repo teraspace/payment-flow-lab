@@ -1,6 +1,6 @@
 # I5 reliability and quality scorecard
 
-This scorecard records measured quality for the I5 branch. It is evidence for review, not a claim that the challenge rubric has already awarded points. The deployed AWS app was not changed by I5; Lighthouse numbers below come from the optimized local build.
+This scorecard records measured quality for I5. It is evidence for review, not a claim that the challenge rubric has already awarded points. The frontend changes were deployed after PR #14 merged; Lighthouse numbers below still come from the optimized local build, not CloudFront.
 
 ## Automated tests and coverage
 
