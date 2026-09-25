@@ -5,11 +5,11 @@
 - Remediation branch: `codex/i8-checkout-acceptance`
 - Verdict: **FAIL — acceptance is not established yet.**
 
-The audit treated the PDF's mandatory requirements as gates. It found seven failures and four items that could not be verified. I8 addresses the seven implementation/documentation gaps locally. The branch has not been deployed, so this does not change the application currently served by CloudFront. No sandbox payment was submitted and no AWS resource was changed during I8. The source challenge defines these criteria; this report records implementation evidence and remaining verification limits.
+The audit treated the PDF's mandatory requirements as gates. It found seven failures and four items that could not be verified. The statements that I8 was local-only and not deployed describe the state when this audit was first written; see the post-audit release update below. No sandbox payment was submitted during the audit or deployment verification. The source challenge defines these criteria; this report records implementation evidence and remaining verification limits.
 
 ## Audit findings and remediation evidence
 
-| Requirement | I7 audit | I8 evidence | Current status |
+| Requirement | I7 audit | I8 evidence | Status at the original audit |
 |---|---|---|---|
 | “Pay with credit card” opens a modal collecting card and delivery details | Fail: card input appeared after the delivery form | Product CTA now opens one accessible card-and-delivery modal. `CheckoutDetailsForm.spec.tsx` verifies consent and tokenization boundaries; local browser showed the modal at the target CSS viewport. | Remediated locally; live deploy pending |
 | Product/base/delivery amounts and payment action appear in a backdrop | Fail: summary and payment action were separate | `CheckoutSummary` contains both the price summary and payment panel in its backdrop; component tests cover the structure. | Remediated locally; live deploy pending |
@@ -36,15 +36,21 @@ The local browser was checked at CSS viewports of **375 × 667** (portrait) and 
 
 `npm run test:coverage --workspace @payment-flow-lab/web` passed 8 suites / 76 tests. `npm run test:api -- --coverage` passed 10 suites / 88 tests against local PostgreSQL, applied all migrations including the I8 migration, and rolled them back. `npm run lint`, `npm run typecheck`, and `npm run build` also passed. The API test runner targets only `payment_flow_lab_test` on loopback; it did not connect to AWS.
 
+## Post-audit release update (2026-09-25)
+
+PR [#17](https://github.com/teraspace/payment-flow-lab/pull/17) merged as `2bc9e7f` after review, and I8 was deployed to AWS. The API runs image `i8-2bc9e7f` on ECS task-definition revision 5; the service stabilized at one desired and one running task with rollout state `COMPLETED`. The I8 database migration completed successfully.
+
+After the deployment, the CloudFront page served the I8 JavaScript and CSS bundles, both returning HTTP 200. The API liveness, database readiness, and public Swagger endpoints returned HTTP 200; readiness reported the database as healthy. These checks establish deployment and availability, but they did not exercise a complete live checkout or submit a sandbox payment.
+
 ## Items still not verified
 
 | Item | Why it remains open |
 |---|---|
-| Sandbox provider transaction after I8 | No payment was submitted in this pass. The final payment action must remain a user handoff; local contract/integration tests are not proof of a live provider transaction. Earlier sandbox evidence is historical and documented in [payment lifecycle](payment-lifecycle.md). |
+| Sandbox provider transaction after I8 | No payment was submitted during the audit or deployment verification. The final payment action remains a separate user-operated acceptance step; local contract/integration tests and deployment smoke checks are not proof of a live provider transaction. Earlier sandbox evidence is historical and documented in [payment lifecycle](payment-lifecycle.md). |
 | Physical iPhone SE 2020 / DPR and landscape behavior | The local CSS viewport was simulated in portrait only; no physical device test was run. |
 | Solution not shared with other candidates | Repository and runtime checks cannot establish private sharing behavior. |
 | Official minimum score of 100 | Only the challenge evaluator can award points. The audit gaps and unverified live gate mean no 100-point claim is made. |
 
-## Deployment and release gate
+## Deployment and release gate at the time of the original audit
 
-The deployed app and API checks recorded during I7 describe the pre-I8 `main` version; they do not verify this remediation. The PR and hosted CI checks for I8 must pass, the user must review the change, and a reviewed deployment plan must be approved before updating AWS. A fresh live smoke should then verify the deployed five-stage flow and API. Any sandbox payment submission remains a user-operated handoff. No Terraform apply or production mutation was part of this branch's verification.
+The deployed app and API checks recorded during I7 described the pre-I8 `main` version. At that point, I8's PR, hosted CI, user review, deployment approval, and live smoke were still pending. PR #17 and its hosted CI subsequently passed; the user reviewed and approved the merge and AWS deployment. The post-audit release update above records the resulting live evidence. A complete sandbox checkout remains a user-operated handoff. The original local I8 verification made no AWS changes; the later deployment did.
