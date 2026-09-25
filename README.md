@@ -53,6 +53,107 @@ The initial migration creates a product catalog table and database checks for no
 
 PostgreSQL is the authority for product price and inventory. `products.reserved_quantity` is changed only by a conditional update inside the same transaction that creates a `checkouts` row, its `checkout_items` price snapshot, a `reservations` row, and an `idempotency_records` row. `customers` and `deliveries` store only the name/email and recipient/address fields needed by the demo; an API background job clears those fields and PII-derived request fingerprints after 30 days. A guest session is represented by an opaque HttpOnly cookie; PostgreSQL stores only its token hash. The I3 data model adds durable payment attempts, minimal event receipts, and one fulfillment row per checkout. Full endpoint shapes and iteration status are documented in [`docs/api-contract.md`](docs/api-contract.md).
 
+The current PostgreSQL relationships are shown below. `PK`, `FK`, and `UK` identify primary, foreign, and unique keys; the relationship ends show the cardinality enforced by the schema.
+
+```mermaid
+erDiagram
+    products ||--o{ checkout_items : snapshot_for
+    products ||--o{ reservations : reserved_by
+    guest_sessions ||--o{ checkouts : owns
+    guest_sessions ||--o{ idempotency_records : scopes
+    customers ||--o{ checkouts : customer_for
+    deliveries ||--o{ checkouts : delivery_for
+    checkouts ||--o{ checkout_items : contains
+    checkouts ||--o| reservations : holds
+    checkouts ||--o{ idempotency_records : replay_result
+    checkouts ||--o{ payment_attempts : has_attempts
+    payment_attempts o|--o{ payment_event_receipts : matched_events
+    checkouts ||--o| fulfillments : fulfills
+
+    products {
+        uuid id PK
+        text sku UK
+        bigint price_minor
+        integer physical_quantity
+        integer reserved_quantity
+        boolean active
+    }
+    guest_sessions {
+        uuid id PK
+        char token_hash UK
+        timestamptz expires_at
+    }
+    customers {
+        uuid id PK
+        text full_name
+        text email
+    }
+    deliveries {
+        uuid id PK
+        text recipient
+        text address
+    }
+    checkouts {
+        uuid id PK
+        uuid guest_session_id FK
+        uuid customer_id FK
+        uuid delivery_id FK
+        text state
+        bigint total_minor
+        timestamptz reservation_expires_at
+    }
+    checkout_items {
+        uuid id PK
+        uuid checkout_id FK
+        uuid product_id FK
+        text sku_snapshot
+        text name_snapshot
+        integer quantity
+        bigint unit_price_minor
+        bigint line_total_minor
+    }
+    reservations {
+        uuid id PK
+        uuid checkout_id FK, UK
+        uuid product_id FK
+        integer quantity
+        text state
+        timestamptz expires_at
+    }
+    idempotency_records {
+        uuid id PK
+        uuid guest_session_id FK
+        uuid checkout_id FK
+        text operation
+        char idempotency_key_hash
+        char fingerprint_hash
+    }
+    payment_attempts {
+        uuid id PK
+        uuid checkout_id FK
+        smallint attempt_number
+        text state
+        text provider_reference UK
+        text provider_transaction_id UK
+        bigint amount_cop
+    }
+    payment_event_receipts {
+        uuid id PK
+        uuid payment_attempt_id FK
+        char event_fingerprint UK
+        text provider_reference
+        text provider_status
+        text disposition
+    }
+    fulfillments {
+        uuid id PK
+        uuid checkout_id FK, UK
+        text state
+    }
+```
+
+The diagram shows primary/foreign keys and the main business attributes; the migrations define all columns, checks, and indexes. Amounts are stored as integer COP minor units. Composite constraints prevent duplicate checkout/product lines, scope checkout idempotency by `(guest_session_id, operation, idempotency_key_hash)`, and enforce unique `(checkout_id, idempotency_key_hash)` and `(checkout_id, attempt_number)` payment attempts. A partial unique index permits at most one unresolved attempt per checkout. `payment_event_receipts.payment_attempt_id` is nullable so unmatched events can be retained; deleting an attempt sets that reference to `NULL`. Customer and delivery fields, plus the request fingerprint, are redacted 30 days after checkout creation.
+
 Checkout creation and payment-attempt creation use a typed `Result` flow: expected business failures short-circuit as `Err`, while successful steps continue as `Ok`. `DatabaseService.transactionResult` rolls back an `Err`; the Nest controller translates the typed failure to its existing HTTP response at the adapter boundary. Unexpected database/infrastructure exceptions still throw and roll back. The payment-provider request remains after the database transaction commits, so ROP does not imply a distributed transaction or an exactly-once remote effect.
 
 Run the API integration suite with `npm run test:api`. It recreates and drops only a local database whose name ends in `_test` (default `payment_flow_lab_test`), applies and rolls back migrations, and uses independent PostgreSQL connections for concurrency checks. It does not reset the developer database named in `.env`.
