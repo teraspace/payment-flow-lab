@@ -24,6 +24,13 @@ export interface ProviderTransaction {
   status: ProviderTransactionStatus;
 }
 
+export interface ProviderAcceptanceDocuments {
+  acceptanceToken: string;
+  acceptanceUrl: string;
+  personalDataAuthorizationToken: string;
+  personalDataAuthorizationUrl: string;
+}
+
 export interface VerifiedProviderEvent {
   fingerprint: string;
   transactionId: string;
@@ -35,6 +42,7 @@ export interface VerifiedProviderEvent {
 }
 
 export interface PaymentGateway {
+  getAcceptanceDocuments(): Promise<ProviderAcceptanceDocuments>;
   createTransaction(
     input: CreateProviderTransaction,
   ): Promise<ProviderTransaction>;

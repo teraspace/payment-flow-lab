@@ -3,6 +3,7 @@ import { CompactEncrypt, importSPKI } from 'jose';
 export interface SandboxPaymentConfiguration {
   baseUrl: string;
   publicKey: string;
+  paymentTokenPrefix: string;
 }
 
 export interface AcceptanceDocuments {
@@ -55,14 +56,14 @@ export function getSandboxPaymentConfiguration():
     return { ready: false, message: 'La URL sandbox configurada no es válida.' };
   }
 
+  const paymentTokenPrefix = sandboxPaymentTokenPrefix(baseUrl.hostname, publicKey);
   if (
     baseUrl.protocol !== 'https:' ||
     baseUrl.username ||
     baseUrl.password ||
     baseUrl.search ||
     baseUrl.hash ||
-    !/(sandbox|test)/i.test(baseUrl.hostname) ||
-    !publicKey.startsWith('pub_test_')
+    !paymentTokenPrefix
   ) {
     return {
       ready: false,
@@ -76,49 +77,29 @@ export function getSandboxPaymentConfiguration():
     configuration: {
       baseUrl: baseUrl.toString().replace(/\/+$/, ''),
       publicKey,
+      paymentTokenPrefix,
     },
   };
 }
 
-export async function loadAcceptanceDocuments(
-  configuration: SandboxPaymentConfiguration,
-): Promise<AcceptanceDocuments> {
-  const response = await fetch(`${configuration.baseUrl}/merchants/info`, {
-    method: 'GET',
-    cache: 'no-store',
-    credentials: 'omit',
-    redirect: 'error',
-    referrerPolicy: 'no-referrer',
-    headers: {
-      accept: 'application/json',
-      'x-merchant-public-key': configuration.publicKey,
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  const payload = await readSuccessfulJson(response, 'No se pudieron cargar los documentos de aceptación sandbox.');
-  const data = asRecord(payload.data);
-  const acceptance = asRecord(data?.presigned_acceptance);
-  const personalData = asRecord(data?.presigned_personal_data_auth);
-  const acceptanceToken = readString(acceptance?.acceptance_token);
-  const acceptanceUrl = httpsUrl(acceptance?.permalink);
-  const personalDataAuthorizationToken = readString(personalData?.acceptance_token);
-  const personalDataAuthorizationUrl = httpsUrl(personalData?.permalink);
-
-  if (
-    !acceptanceToken ||
-    !acceptanceUrl ||
-    !personalDataAuthorizationToken ||
-    !personalDataAuthorizationUrl
-  ) {
-    throw new Error('El ambiente sandbox no devolvió ambos documentos de aceptación.');
+function sandboxPaymentTokenPrefix(hostname: string, publicKey: string): string | null {
+  const normalizedHost = hostname.toLowerCase();
+  if (publicKey.startsWith('pub_test_') && /(sandbox|test)/i.test(normalizedHost)) {
+    return 'tok_test_';
   }
 
-  return {
-    acceptanceToken,
-    acceptanceUrl,
-    personalDataAuthorizationToken,
-    personalDataAuthorizationUrl,
-  };
+  const hostLabels = normalizedHost.split('.');
+  const isChallengeStagingSandbox =
+    hostLabels.length === 5 &&
+    hostLabels[0] === 'api-sandbox' &&
+    hostLabels[1] === 'co' &&
+    hostLabels[2] === 'uat' &&
+    hostLabels[4] === 'dev';
+  if (isChallengeStagingSandbox && publicKey.startsWith('pub_stagtest_')) {
+    return 'tok_stagtest_';
+  }
+
+  return null;
 }
 
 export async function tokenizeSandboxCard(
@@ -191,7 +172,7 @@ export async function tokenizeSandboxCard(
   });
   const tokenPayload = await readSuccessfulJson(tokenResponse, 'La tokenización sandbox fue rechazada.');
   const paymentToken = readString(asRecord(tokenPayload.data)?.id);
-  if (!paymentToken?.startsWith('tok_test_')) {
+  if (!paymentToken?.startsWith(configuration.paymentTokenPrefix)) {
     throw new Error('El ambiente no devolvió un token de pago de prueba.');
   }
   return paymentToken;
@@ -223,15 +204,4 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function httpsUrl(value: unknown): string | null {
-  const candidate = readString(value);
-  if (!candidate) return null;
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === 'https:' ? parsed.toString() : null;
-  } catch {
-    return null;
-  }
 }

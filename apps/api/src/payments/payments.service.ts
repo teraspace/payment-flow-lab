@@ -21,6 +21,7 @@ import {
   PaymentGateway,
   ProviderTransaction,
   ProviderTransactionStatus,
+  ProviderAcceptanceDocuments,
   VerifiedProviderEvent,
 } from './payment-gateway.contract';
 import {
@@ -140,6 +141,22 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     await this.activeReconciliation;
+  }
+
+  async getAcceptanceDocuments(): Promise<ProviderAcceptanceDocuments> {
+    try {
+      return await this.gateway.getAcceptanceDocuments();
+    } catch (error) {
+      if (
+        error instanceof PaymentGatewayConfigurationError ||
+        error instanceof PaymentGatewayUnavailableError
+      ) {
+        throw new ServiceUnavailableException(
+          'Sandbox acceptance documents are temporarily unavailable.',
+        );
+      }
+      throw error;
+    }
   }
 
   async createAttempt(

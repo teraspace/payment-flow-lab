@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   CreateProviderTransaction,
   PaymentGateway,
+  ProviderAcceptanceDocuments,
   ProviderTransaction,
   ProviderTransactionStatus,
 } from './payment-gateway.contract';
@@ -26,12 +27,79 @@ const TRANSACTION_STATUSES = new Set<ProviderTransactionStatus>([
   'ERROR',
 ]);
 
+const TEST_INTEGRATION_PROFILE = {
+  publicKeyPrefix: 'pub_test_',
+  privateKeyPrefix: 'prv_test_',
+  integritySecretPrefix: 'test_integrity_',
+  eventsSecretPrefix: 'test_events_',
+};
+
+const STAGING_TEST_INTEGRATION_PROFILE = {
+  publicKeyPrefix: 'pub_stagtest_',
+  privateKeyPrefix: 'prv_stagtest_',
+  integritySecretPrefix: 'stagtest_integrity_',
+  eventsSecretPrefix: 'stagtest_events_',
+};
+
 @Injectable()
 export class HttpPaymentGateway implements PaymentGateway {
   constructor(
     private readonly config: ConfigService,
     @Inject(PAYMENT_GATEWAY_FETCH) private readonly fetcher: FetchFunction,
   ) {}
+
+  async getAcceptanceDocuments(): Promise<ProviderAcceptanceDocuments> {
+    const configuration = this.configuration(false, false);
+    let response: Response;
+    try {
+      response = await this.fetcher(this.endpoint(configuration.baseUrl, 'merchants/info'), {
+        method: 'GET',
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          accept: 'application/json',
+          'x-merchant-public-key': configuration.publicKey,
+        },
+      });
+    } catch {
+      throw new PaymentGatewayUnavailableError();
+    }
+
+    if (!response.ok) throw new PaymentGatewayUnavailableError();
+    try {
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !isRecord(payload.data)) {
+        throw new Error('Missing merchant data.');
+      }
+      const acceptance = payload.data.presigned_acceptance;
+      const personalData = payload.data.presigned_personal_data_auth;
+      if (!isRecord(acceptance) || !isRecord(personalData)) {
+        throw new Error('Missing acceptance documents.');
+      }
+      const acceptanceToken = readNonEmptyString(acceptance.acceptance_token);
+      const acceptanceUrl = readHttpsUrl(acceptance.permalink);
+      const personalDataAuthorizationToken = readNonEmptyString(
+        personalData.acceptance_token,
+      );
+      const personalDataAuthorizationUrl = readHttpsUrl(personalData.permalink);
+      if (
+        !acceptanceToken ||
+        !acceptanceUrl ||
+        !personalDataAuthorizationToken ||
+        !personalDataAuthorizationUrl
+      ) {
+        throw new Error('Invalid acceptance document fields.');
+      }
+      return {
+        acceptanceToken,
+        acceptanceUrl,
+        personalDataAuthorizationToken,
+        personalDataAuthorizationUrl,
+      };
+    } catch {
+      throw new PaymentGatewayUnavailableError();
+    }
+  }
 
   async createTransaction(
     input: CreateProviderTransaction,
@@ -132,17 +200,28 @@ export class HttpPaymentGateway implements PaymentGateway {
     }
   }
 
-  private configuration(requireIntegritySecret: boolean): {
+  private configuration(
+    requireIntegritySecret: boolean,
+    requirePrivateKey = true,
+  ): {
     baseUrl: string;
+    publicKey: string;
     privateKey: string;
     integritySecret: string;
   } {
     const baseUrl = this.config.get<string>('PAYMENT_GATEWAY_BASE_URL')?.trim();
+    const publicKey = this.config.get<string>('PAYMENT_GATEWAY_PUBLIC_KEY')?.trim();
     const privateKey = this.config.get<string>('PAYMENT_GATEWAY_PRIVATE_KEY')?.trim();
     const integritySecret = this.config
       .get<string>('PAYMENT_GATEWAY_INTEGRITY_SECRET')
       ?.trim();
-    if (!baseUrl || !privateKey || (requireIntegritySecret && !integritySecret)) {
+    const eventsSecret = this.config.get<string>('PAYMENT_GATEWAY_EVENTS_SECRET')?.trim();
+    if (
+      !baseUrl ||
+      !publicKey ||
+      (requirePrivateKey && !privateKey) ||
+      (requireIntegritySecret && !integritySecret)
+    ) {
       throw new PaymentGatewayConfigurationError();
     }
 
@@ -168,9 +247,24 @@ export class HttpPaymentGateway implements PaymentGateway {
       throw new PaymentGatewayConfigurationError();
     }
 
+    const isStagingSandboxHost = isChallengeStagingSandboxHost(parsedUrl.hostname);
+    const profile = isStagingSandboxHost
+      ? STAGING_TEST_INTEGRATION_PROFILE
+      : TEST_INTEGRATION_PROFILE;
+    if (
+      !publicKey.startsWith(profile.publicKeyPrefix) ||
+      (privateKey !== undefined && !privateKey.startsWith(profile.privateKeyPrefix)) ||
+      (integritySecret !== undefined &&
+        !integritySecret.startsWith(profile.integritySecretPrefix)) ||
+      (eventsSecret !== undefined && !eventsSecret.startsWith(profile.eventsSecretPrefix))
+    ) {
+      throw new PaymentGatewayConfigurationError();
+    }
+
     return {
       baseUrl: parsedUrl.toString().replace(/\/+$/, ''),
-      privateKey,
+      publicKey,
+      privateKey: privateKey ?? '',
       integritySecret: integritySecret ?? '',
     };
   }
@@ -211,6 +305,32 @@ export class HttpPaymentGateway implements PaymentGateway {
   }
 }
 
+function isChallengeStagingSandboxHost(hostname: string): boolean {
+  const labels = hostname.toLowerCase().split('.');
+  return (
+    labels.length === 5 &&
+    labels[0] === 'api-sandbox' &&
+    labels[1] === 'co' &&
+    labels[2] === 'uat' &&
+    labels[4] === 'dev'
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readHttpsUrl(value: unknown): string | null {
+  const candidate = readNonEmptyString(value);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }

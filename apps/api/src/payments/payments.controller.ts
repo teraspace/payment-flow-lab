@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Headers,
   HttpCode,
   Param,
@@ -22,6 +23,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { Request, Response } from 'express';
+import { ProviderAcceptanceDocuments } from './payment-gateway.contract';
 import {
   GUEST_SESSION_COOKIE,
   GuestSessionsService,
@@ -82,6 +84,20 @@ export class PaymentsController {
     private readonly payments: PaymentsService,
     private readonly sessions: GuestSessionsService,
   ) {}
+
+  @Get('payment-configuration/acceptance-documents')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary: 'Load the current sandbox acceptance documents for the checkout UI',
+  })
+  @ApiOkResponse({
+    description:
+      'Acceptance tokens and HTTPS document links fetched using the configured sandbox public key.',
+  })
+  @ApiResponse({ status: 503, description: 'Sandbox acceptance documents are unavailable.' })
+  async acceptanceDocuments(): Promise<ProviderAcceptanceDocuments> {
+    return this.payments.getAcceptanceDocuments();
+  }
 
   @Post('checkouts/:checkoutId/payment-attempts')
   @HttpCode(201)

@@ -75,10 +75,11 @@ Redaction is intentionally irreversible. The retention migration refuses to rest
 
 Database consistency protects each local transition; idempotency makes repeated commands resolve to one stable domain resource. Neither property provides exactly-once execution across a future payment-provider boundary.
 
-## I3 payment routes
+## I3 payment and I4 support routes
 
-| Method and route | Planned behavior |
+| Method and route | Behavior |
 |---|---|
+| `GET /api/v1/payment-configuration/acceptance-documents` | Fetches current sandbox acceptance tokens and HTTPS document links server-side using the configured test public key, then returns only those values to the checkout UI. This same-origin route avoids depending on provider CORS for merchant metadata. Returns `503` when sandbox configuration or metadata is unavailable. |
 | `POST /api/v1/checkouts/{checkoutId}/payment-attempts` | Requires a separate `Idempotency-Key`, a one-time card token from browser-side tokenization, and both current consent tokens. First result is `201`; matching replay is `200`; changed payload under the same key is `409`. The API computes the provider amount and integrity signature, persists the attempt in a short SQL transaction, then calls the provider after commit. |
 | `GET /api/v1/checkouts/{checkoutId}/payment-attempts/{attemptId}` | Requires the owning guest session. Returns attempt ID/number, domain state, amount in whole COP, currency, timestamps, and manual-review flag. When a provider transaction ID is known, it may reconcile through the server-side status API. It never sends a second create request. |
 | `GET /api/v1/checkouts/{checkoutId}/payment-attempts/latest` | Requires the owning guest session; returns and reconciles the latest attempt after refresh. Returns `404` when no attempt exists. It never creates or resends a provider transaction. |

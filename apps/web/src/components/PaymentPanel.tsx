@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { formatCop, formatDateTime } from '../app/format';
 import {
   ApiRequestError,
+  loadAcceptanceDocumentsFromApi,
   submitPaymentAttempt,
   type Checkout,
   type PaymentAttempt,
 } from '../app/service-api';
 import {
   getSandboxPaymentConfiguration,
-  loadAcceptanceDocuments,
   SANDBOX_TEST_CARDS,
   tokenizeSandboxCard,
   type AcceptanceDocuments,
@@ -61,7 +61,7 @@ export function PaymentPanel({
   useEffect(() => {
     if (!paymentConfiguration.ready) return;
     let active = true;
-    loadAcceptanceDocuments(paymentConfiguration.configuration)
+    loadAcceptanceDocumentsFromApi()
       .then((documents) => {
         if (active) setAcceptance(documents);
       })
@@ -122,7 +122,7 @@ export function PaymentPanel({
     setAcceptance(null);
     setAcceptanceError(null);
     setAcceptanceLoading(true);
-    loadAcceptanceDocuments(paymentConfiguration.configuration)
+    loadAcceptanceDocumentsFromApi()
       .then(setAcceptance)
       .catch(() => setAcceptanceError('No pudimos obtener los contratos vigentes del sandbox.'))
       .finally(() => setAcceptanceLoading(false));

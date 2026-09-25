@@ -1,4 +1,5 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import type { AcceptanceDocuments } from './sandbox-payment';
 
 export interface ReadinessResponse {
   status: 'ok';
@@ -155,6 +156,44 @@ export function getApiBaseUrl(): string {
   return apiBaseUrl;
 }
 
+export async function loadAcceptanceDocumentsFromApi(): Promise<AcceptanceDocuments> {
+  const response = await fetch(
+    `${apiBaseUrl.replace(/\/$/, '')}/payment-configuration/acceptance-documents`,
+    {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiRequestError(response.status, 'No se pudieron cargar los documentos de aceptación sandbox.');
+  }
+  const record = isRecord(payload) ? payload : null;
+  const acceptanceToken = readString(record?.acceptanceToken);
+  const acceptanceUrl = readHttpsUrl(record?.acceptanceUrl);
+  const personalDataAuthorizationToken = readString(record?.personalDataAuthorizationToken);
+  const personalDataAuthorizationUrl = readHttpsUrl(record?.personalDataAuthorizationUrl);
+  if (
+    !acceptanceToken ||
+    !acceptanceUrl ||
+    !personalDataAuthorizationToken ||
+    !personalDataAuthorizationUrl
+  ) {
+    throw new ApiRequestError(502, 'El API no devolvió documentos de aceptación válidos.');
+  }
+  return {
+    acceptanceToken,
+    acceptanceUrl,
+    personalDataAuthorizationToken,
+    personalDataAuthorizationUrl,
+  };
+}
+
 export async function submitPaymentAttempt(
   checkoutId: string,
   idempotencyKey: string,
@@ -208,4 +247,19 @@ export class ApiRequestError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readHttpsUrl(value: unknown): string | null {
+  const candidate = readString(value);
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === 'https:' ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
 }

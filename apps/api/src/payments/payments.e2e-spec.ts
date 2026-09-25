@@ -35,6 +35,7 @@ describe('payment lifecycle API (PostgreSQL)', () => {
   };
 
   const gateway: jest.Mocked<PaymentGateway> = {
+    getAcceptanceDocuments: jest.fn(),
     createTransaction: jest.fn(),
     getTransaction: jest.fn(),
   };
@@ -105,6 +106,12 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       if (!transaction) throw new Error('Unknown provider transaction in test fixture.');
       return { ...transaction, status: currentStatuses.get(id) ?? transaction.status };
     });
+    gateway.getAcceptanceDocuments.mockResolvedValue({
+      acceptanceToken: 'sandbox-terms-token',
+      acceptanceUrl: 'https://documents.example.test/terms.pdf',
+      personalDataAuthorizationToken: 'sandbox-privacy-token',
+      personalDataAuthorizationUrl: 'https://documents.example.test/privacy.pdf',
+    });
 
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(PAYMENT_GATEWAY)
@@ -124,6 +131,7 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     transactionSequence = 0;
     gateway.createTransaction.mockClear();
     gateway.getTransaction.mockClear();
+    gateway.getAcceptanceDocuments.mockClear();
     await database.query(`
       TRUNCATE payment_event_receipts, fulfillments, payment_attempts,
                idempotency_records, reservations, checkout_items, checkouts,
@@ -144,6 +152,19 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       WHERE sku IN ('desk-notebook', 'urban-bottle', 'canvas-tote');
     `);
     cookie = await initializeSession();
+  });
+
+  it('serves acceptance documents through the local API for browser compatibility', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/payment-configuration/acceptance-documents')
+      .expect(200)
+      .expect({
+        acceptanceToken: 'sandbox-terms-token',
+        acceptanceUrl: 'https://documents.example.test/terms.pdf',
+        personalDataAuthorizationToken: 'sandbox-privacy-token',
+        personalDataAuthorizationUrl: 'https://documents.example.test/privacy.pdf',
+      });
+    expect(gateway.getAcceptanceDocuments).toHaveBeenCalledTimes(1);
   });
 
   afterAll(async () => {
