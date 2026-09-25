@@ -1,9 +1,8 @@
 import { CompactEncrypt, importSPKI } from 'jose';
+import { getApiBaseUrl } from './service-api';
 
 export interface SandboxPaymentConfiguration {
-  baseUrl: string;
-  publicKey: string;
-  paymentTokenPrefix: string;
+  environment: 'test';
 }
 
 export interface AcceptanceDocuments {
@@ -32,8 +31,6 @@ export function getSandboxPaymentConfiguration():
   | { ready: true; configuration: SandboxPaymentConfiguration }
   | { ready: false; message: string } {
   const environment = import.meta.env.VITE_PAYMENT_GATEWAY_ENVIRONMENT?.trim() || 'test';
-  const baseUrlValue = import.meta.env.VITE_PAYMENT_GATEWAY_BASE_URL?.trim() || '';
-  const publicKey = import.meta.env.VITE_PAYMENT_GATEWAY_PUBLIC_KEY?.trim() || '';
 
   if (environment !== 'test') {
     return {
@@ -41,69 +38,13 @@ export function getSandboxPaymentConfiguration():
       message: 'Esta aplicación sólo permite procesar pagos en el ambiente sandbox.',
     };
   }
-  if (!baseUrlValue || !publicKey) {
-    return {
-      ready: false,
-      message:
-        'El pago sandbox está deshabilitado hasta configurar la URL y la llave pública de prueba.',
-    };
-  }
-
-  let baseUrl: URL;
-  try {
-    baseUrl = new URL(baseUrlValue);
-  } catch {
-    return { ready: false, message: 'La URL sandbox configurada no es válida.' };
-  }
-
-  const paymentTokenPrefix = sandboxPaymentTokenPrefix(baseUrl.hostname, publicKey);
-  if (
-    baseUrl.protocol !== 'https:' ||
-    baseUrl.username ||
-    baseUrl.password ||
-    baseUrl.search ||
-    baseUrl.hash ||
-    !paymentTokenPrefix
-  ) {
-    return {
-      ready: false,
-      message:
-        'La configuración no parece pertenecer a sandbox. No se enviarán tarjetas ni se crearán transacciones.',
-    };
-  }
-
   return {
     ready: true,
-    configuration: {
-      baseUrl: baseUrl.toString().replace(/\/+$/, ''),
-      publicKey,
-      paymentTokenPrefix,
-    },
+    configuration: { environment: 'test' },
   };
 }
 
-function sandboxPaymentTokenPrefix(hostname: string, publicKey: string): string | null {
-  const normalizedHost = hostname.toLowerCase();
-  if (publicKey.startsWith('pub_test_') && /(sandbox|test)/i.test(normalizedHost)) {
-    return 'tok_test_';
-  }
-
-  const hostLabels = normalizedHost.split('.');
-  const isChallengeStagingSandbox =
-    hostLabels.length === 5 &&
-    hostLabels[0] === 'api-sandbox' &&
-    hostLabels[1] === 'co' &&
-    hostLabels[2] === 'uat' &&
-    hostLabels[4] === 'dev';
-  if (isChallengeStagingSandbox && publicKey.startsWith('pub_stagtest_')) {
-    return 'tok_stagtest_';
-  }
-
-  return null;
-}
-
 export async function tokenizeSandboxCard(
-  configuration: SandboxPaymentConfiguration,
   card: SandboxCardData,
 ): Promise<string> {
   const normalizedNumber = card.number.replace(/\s/g, '');
@@ -120,20 +61,21 @@ export async function tokenizeSandboxCard(
     throw new Error('Escribe el nombre de prueba que aparece en la tarjeta.');
   }
 
-  const keyResponse = await fetch(`${configuration.baseUrl}/tokens/keys/tokenization`, {
-    method: 'GET',
-    cache: 'no-store',
-    credentials: 'omit',
-    redirect: 'error',
-    referrerPolicy: 'no-referrer',
-    headers: {
-      accept: 'application/json',
-      authorization: `Bearer ${configuration.publicKey}`,
+  const paymentConfigurationUrl = `${getApiBaseUrl().replace(/\/$/, '')}/payment-configuration`;
+  const keyResponse = await fetchApi(
+    `${paymentConfigurationUrl}/tokenization-key`,
+    {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'include',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
     },
-    signal: AbortSignal.timeout(15_000),
-  });
+  );
   const keyPayload = await readSuccessfulJson(keyResponse, 'No se pudo cargar la llave de cifrado sandbox.');
-  const publicKeyPem = readString(asRecord(keyPayload.data)?.publicKey);
+  const publicKeyPem = readString(keyPayload.publicKey);
   if (!publicKeyPem) throw new Error('El ambiente sandbox no devolvió una llave de cifrado.');
 
   const protectedCard = {
@@ -156,26 +98,36 @@ export async function tokenizeSandboxCard(
     throw new Error('No se pudo cifrar la tarjeta de prueba en el navegador.');
   }
 
-  const tokenResponse = await fetch(`${configuration.baseUrl}/tokens/cards`, {
-    method: 'POST',
-    cache: 'no-store',
-    credentials: 'omit',
-    redirect: 'error',
-    referrerPolicy: 'no-referrer',
-    headers: {
-      accept: 'application/json',
-      authorization: `Bearer ${configuration.publicKey}`,
-      'content-type': 'application/json',
+  const tokenResponse = await fetchApi(
+    `${paymentConfigurationUrl}/card-tokens`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'include',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ payload: encryptedPayload }),
+      signal: AbortSignal.timeout(20_000),
     },
-    body: JSON.stringify({ payload: encryptedPayload }),
-    signal: AbortSignal.timeout(20_000),
-  });
+  );
   const tokenPayload = await readSuccessfulJson(tokenResponse, 'La tokenización sandbox fue rechazada.');
-  const paymentToken = readString(asRecord(tokenPayload.data)?.id);
-  if (!paymentToken?.startsWith(configuration.paymentTokenPrefix)) {
+  const paymentToken = readString(tokenPayload.paymentToken);
+  if (!paymentToken?.startsWith('tok_test_') && !paymentToken?.startsWith('tok_stagtest_')) {
     throw new Error('El ambiente no devolvió un token de pago de prueba.');
   }
   return paymentToken;
+}
+
+async function fetchApi(input: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch {
+    throw new Error('No se pudo conectar con el API de tokenización sandbox.');
+  }
 }
 
 function isFutureExpiry(month: string, year: string): boolean {

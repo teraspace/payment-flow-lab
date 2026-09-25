@@ -159,6 +159,41 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async getTokenizationPublicKey(): Promise<string> {
+    try {
+      return await this.gateway.getTokenizationPublicKey();
+    } catch (error) {
+      if (
+        error instanceof PaymentGatewayConfigurationError ||
+        error instanceof PaymentGatewayUnavailableError
+      ) {
+        throw new ServiceUnavailableException(
+          'Sandbox card tokenization is temporarily unavailable.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  async tokenizeEncryptedCard(payload: string): Promise<string> {
+    try {
+      return await this.gateway.tokenizeEncryptedCard(payload);
+    } catch (error) {
+      if (error instanceof PaymentGatewayRejectedError) {
+        throw new BadRequestException('The sandbox rejected the test card.');
+      }
+      if (
+        error instanceof PaymentGatewayConfigurationError ||
+        error instanceof PaymentGatewayUnavailableError
+      ) {
+        throw new ServiceUnavailableException(
+          'Sandbox card tokenization is temporarily unavailable.',
+        );
+      }
+      throw error;
+    }
+  }
+
   async createAttempt(
     sessionId: string,
     checkoutId: string,

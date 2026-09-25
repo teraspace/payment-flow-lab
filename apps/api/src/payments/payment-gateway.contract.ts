@@ -43,6 +43,8 @@ export interface VerifiedProviderEvent {
 
 export interface PaymentGateway {
   getAcceptanceDocuments(): Promise<ProviderAcceptanceDocuments>;
+  getTokenizationPublicKey(): Promise<string>;
+  tokenizeEncryptedCard(payload: string): Promise<string>;
   createTransaction(
     input: CreateProviderTransaction,
   ): Promise<ProviderTransaction>;

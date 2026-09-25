@@ -104,6 +104,54 @@ describe('HttpPaymentGateway', () => {
     );
   });
 
+  it('loads the encryption key through the configured sandbox public key', async () => {
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(200, { data: { publicKey: 'sandbox-encryption-key' } }),
+    );
+
+    await expect(gateway(fetcher).getTokenizationPublicKey()).resolves.toBe(
+      'sandbox-encryption-key',
+    );
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://sandbox.example.test/v1/tokens/keys/tokenization');
+    expect(init.method).toBe('GET');
+    expect(new Headers(init.headers).get('authorization')).toBe(
+      'Bearer pub_test_public-key',
+    );
+  });
+
+  it('relays only encrypted card data and accepts the matching sandbox token prefix', async () => {
+    const encryptedPayload =
+      'eyJhbGciOiJSU0EtT0FFUC0yNTYifQ.dGVzdC1rZXk.dGVzdC1pdg.dGVzdC1jaXBoZXJ0ZXh0.dGVzdC10YWc';
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(201, { data: { id: 'tok_test_card-token-001' } }),
+    );
+
+    await expect(gateway(fetcher).tokenizeEncryptedCard(encryptedPayload)).resolves.toBe(
+      'tok_test_card-token-001',
+    );
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://sandbox.example.test/v1/tokens/cards');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('authorization')).toBe(
+      'Bearer pub_test_public-key',
+    );
+    expect(JSON.parse(String(init.body))).toEqual({ payload: encryptedPayload });
+    expect(String(init.body)).not.toContain('4242424242424242');
+  });
+
+  it('rejects a token from a mismatched sandbox profile', async () => {
+    const fetcher = jest.fn().mockResolvedValue(
+      jsonResponse(201, { data: { id: 'tok_stagtest_other-profile' } }),
+    );
+
+    await expect(
+      gateway(fetcher).tokenizeEncryptedCard(
+        'eyJhbGciOiJSU0EtT0FFUC0yNTYifQ.dGVzdC1rZXk.dGVzdC1pdg.dGVzdC1jaXBoZXJ0ZXh0.dGVzdC10YWc',
+      ),
+    ).rejects.toBeInstanceOf(PaymentGatewayUnavailableError);
+  });
+
   it('accepts the challenge staging sandbox only with its test credential profile', async () => {
     const fetcher = jest.fn().mockResolvedValue(
       jsonResponse(201, {

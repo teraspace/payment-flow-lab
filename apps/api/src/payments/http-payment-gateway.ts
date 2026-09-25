@@ -101,6 +101,85 @@ export class HttpPaymentGateway implements PaymentGateway {
     }
   }
 
+  async getTokenizationPublicKey(): Promise<string> {
+    const configuration = this.configuration(false, false);
+    let response: Response;
+    try {
+      response = await this.fetcher(
+        this.endpoint(configuration.baseUrl, 'tokens/keys/tokenization'),
+        {
+          method: 'GET',
+          redirect: 'error',
+          signal: AbortSignal.timeout(15_000),
+          headers: {
+            accept: 'application/json',
+            authorization: `Bearer ${configuration.publicKey}`,
+          },
+        },
+      );
+    } catch {
+      throw new PaymentGatewayUnavailableError();
+    }
+
+    if (!response.ok) throw new PaymentGatewayUnavailableError();
+    try {
+      const payload: unknown = await response.json();
+      if (!isRecord(payload) || !isRecord(payload.data)) {
+        throw new Error('Missing tokenization key data.');
+      }
+      const publicKey = readNonEmptyString(payload.data.publicKey);
+      if (!publicKey) throw new Error('Missing tokenization public key.');
+      return publicKey;
+    } catch {
+      throw new PaymentGatewayUnavailableError();
+    }
+  }
+
+  async tokenizeEncryptedCard(payload: string): Promise<string> {
+    const configuration = this.configuration(false, false);
+    let response: Response;
+    try {
+      response = await this.fetcher(
+        this.endpoint(configuration.baseUrl, 'tokens/cards'),
+        {
+          method: 'POST',
+          redirect: 'error',
+          signal: AbortSignal.timeout(20_000),
+          headers: {
+            accept: 'application/json',
+            authorization: `Bearer ${configuration.publicKey}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ payload }),
+        },
+      );
+    } catch {
+      // Tokenization can leave an unused provider token, but it cannot charge.
+      throw new PaymentGatewayUnavailableError();
+    }
+
+    if (response.status >= 400 && response.status < 500) {
+      throw new PaymentGatewayRejectedError(response.status);
+    }
+    if (!response.ok) throw new PaymentGatewayUnavailableError();
+    try {
+      const responseBody: unknown = await response.json();
+      if (!isRecord(responseBody) || !isRecord(responseBody.data)) {
+        throw new Error('Missing card token data.');
+      }
+      const paymentToken = readNonEmptyString(responseBody.data.id);
+      const expectedPrefix = configuration.publicKey.startsWith('pub_stagtest_')
+        ? 'tok_stagtest_'
+        : 'tok_test_';
+      if (!paymentToken?.startsWith(expectedPrefix)) {
+        throw new Error('Provider did not return a sandbox card token.');
+      }
+      return paymentToken;
+    } catch {
+      throw new PaymentGatewayUnavailableError();
+    }
+  }
+
   async createTransaction(
     input: CreateProviderTransaction,
   ): Promise<ProviderTransaction> {

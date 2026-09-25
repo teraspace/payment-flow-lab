@@ -31,6 +31,7 @@ import {
 import { CreatePaymentAttemptDto } from './dto/create-payment-attempt.dto';
 import { PaymentAttemptView } from './payment-attempt.view';
 import { PaymentsService } from './payments.service';
+import { TokenizeSandboxCardDto } from './dto/tokenize-sandbox-card.dto';
 
 class PaymentAttemptResponse implements PaymentAttemptView {
   @ApiProperty({ format: 'uuid' })
@@ -97,6 +98,29 @@ export class PaymentsController {
   @ApiResponse({ status: 503, description: 'Sandbox acceptance documents are unavailable.' })
   async acceptanceDocuments(): Promise<ProviderAcceptanceDocuments> {
     return this.payments.getAcceptanceDocuments();
+  }
+
+  @Get('payment-configuration/tokenization-key')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({ summary: 'Load the current test-only card-encryption key' })
+  @ApiOkResponse({ schema: { example: { publicKey: 'sandbox-public-encryption-key' } } })
+  @ApiResponse({ status: 503, description: 'Sandbox tokenization is unavailable.' })
+  async tokenizationKey(): Promise<{ publicKey: string }> {
+    return { publicKey: await this.payments.getTokenizationPublicKey() };
+  }
+
+  @Post('payment-configuration/card-tokens')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({
+    summary: 'Relay browser-encrypted card data to the test provider for tokenization',
+  })
+  @ApiCreatedResponse({ schema: { example: { paymentToken: 'tok_test_example' } } })
+  @ApiResponse({ status: 400, description: 'The sandbox rejected the test card.' })
+  @ApiResponse({ status: 503, description: 'Sandbox tokenization is unavailable.' })
+  async tokenizeCard(
+    @Body() dto: TokenizeSandboxCardDto,
+  ): Promise<{ paymentToken: string }> {
+    return { paymentToken: await this.payments.tokenizeEncryptedCard(dto.payload) };
   }
 
   @Post('checkouts/:checkoutId/payment-attempts')

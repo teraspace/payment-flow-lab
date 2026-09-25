@@ -155,10 +155,7 @@ export function PaymentPanel({
     setSubmitting(true);
     let paymentRequestStarted = false;
     try {
-      const paymentToken = await tokenizeSandboxCard(
-        paymentConfiguration.configuration,
-        card,
-      );
+      const paymentToken = await tokenizeSandboxCard(card);
       clearCardData(card);
       const commandKey = crypto.randomUUID();
       if (!writePaymentRecoveryStart(checkout.checkoutId, Date.now())) {
@@ -422,7 +419,7 @@ export function PaymentPanel({
                     <span aria-hidden="true">→</span>
                   </button>
                   <p className="privacy-note">
-                    La tarjeta se cifra en el navegador y se envía directamente al sandbox. Sólo el token de prueba llega al API.
+                    La tarjeta se cifra en el navegador; el API retransmite sólo ese paquete cifrado al sandbox. El API nunca recibe el número ni el CVC legibles.
                   </p>
                 </form>
               ) : null}
