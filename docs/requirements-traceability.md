@@ -45,7 +45,7 @@ The PDF names allowed stacks and an AWS preference, but does not require a parti
 
 The current official provider documentation was rechecked on 2026-09-24. It describes browser-side card tokenization, two separate consent tokens, transaction amounts in integer centavos, an initial successful creation state of `PENDING`, terminal states including `APPROVED`, `DECLINED`, `VOIDED`, and `ERROR`, server-side lookup by provider transaction ID, and signed events. It requires a unique reference but does not establish a remote idempotency guarantee. Therefore an ambiguous timeout or duplicate-reference response is not treated as proof that a charge succeeded or failed.
 
-I3 verifies these contract details with unit tests and a deterministic provider double against real PostgreSQL. No live sandbox credentials, provider secrets, or provider-specific URL are kept in this public project documentation. A real sandbox pass remains pending until test credentials are available.
+I3 verifies these contract details with unit tests and a deterministic provider double against real PostgreSQL. I4 follows the published browser tokenization and acceptance-document flow, restricts input to published sandbox test cards, and gates the payment adapter to test configuration. No live sandbox credentials, provider secrets, or provider-specific URL are kept in this public project documentation. A real sandbox pass remains pending until test credentials are available.
 
 ## I0 approval checklist
 
@@ -80,3 +80,11 @@ I3 verifies these contract details with unit tests and a deterministic provider 
 - PR #10 merged on 2026-09-25 as `23f9aa2`. The migration task exited `0`; API image `i3-23f9aa2` (`linux/arm64`, digest `sha256:9fb84eb695ba1abee131e76f2b6e1fc5d897f725e8d7b7b04156a5a53e24890c`) is deployed as ECS task-definition revision 3. ECS stabilized at 1/1 with the new target healthy.
 - Public HTTPS smoke checks returned `200` for `/api/v1/health/live`, `/api/v1/health/ready` (`database: ok`), and `/api/v1/docs`. OpenAPI lists ten paths, including checkout payment attempts and signed payment events. The React shell is unchanged; I4 remains the customer-facing checkout iteration.
 - The initial unscoped Terraform plan also detected unrelated generated web-asset drift in local `apps/web/dist`; I3 deliberately deployed only its migration task definition and API task definition/service. No RDS, network, load-balancer, S3, or CloudFront resources were changed. Reconcile the web assets separately with I4; do not treat the I3 apply as a clean full-stack Terraform plan.
+
+## I4 React checkout implementation (in progress)
+
+- The feature branch adds API-backed product selection, delivery/customer form, quantity selection, server-calculated order summary, accessible progress and status messages, and responsive checkout layouts.
+- Checkout command keys allow recovery after a lost response without persisting customer/address data. Refresh restores the checkout from the URL and reads the latest payment state through a guest-session-scoped endpoint.
+- Payment capture is sandbox-only by design: the browser and API reject live configuration, the card input accepts only published sandbox test PANs, and no real card, live key, or sandbox credential is checked in. The app has no configured sandbox URL/key by default, so provider tokenization remains disabled until local sandbox configuration is supplied.
+- In-flight and unknown payment outcomes block new attempts; the UI refreshes the API status while the page is visible. PAN/CVC are never sent to the application API or written to Redux/storage; only the short-lived payment token crosses to the API.
+- This implementation has not been merged or deployed. Local lint/typecheck/build and browser acceptance evidence are pending. Do not claim UI or full-flow scorecard points until responsive browser flow and outcomes are captured. Automated tests have not been run for this I4 turn.

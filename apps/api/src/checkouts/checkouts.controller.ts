@@ -164,6 +164,34 @@ export class CheckoutsController {
     return result.checkout;
   }
 
+  @Post('recover')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Recover a checkout from its command key without resending personal data',
+  })
+  @ApiCookieAuth('guest-session')
+  @ApiHeader({
+    name: 'Idempotency-Key',
+    required: true,
+    schema: { type: 'string', minLength: 16, maxLength: 128 },
+  })
+  @ApiOkResponse({ type: CheckoutResponse })
+  @ApiNotFoundResponse({ description: 'No checkout exists for this guest command.' })
+  @ApiResponse({
+    status: 410,
+    description: 'The checkout replay window expired after personal-data redaction.',
+  })
+  @ApiUnauthorizedResponse({ description: 'Guest session cookie is missing or expired.' })
+  async recover(
+    @Req() request: Request,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+  ): Promise<CheckoutResponse> {
+    const sessionId = await this.sessions.requireSessionId(
+      request.cookies?.[GUEST_SESSION_COOKIE],
+    );
+    return this.checkouts.recover(sessionId, idempotencyKey);
+  }
+
   @Get(':checkoutId')
   @ApiOperation({ summary: 'Read a checkout owned by the current guest session' })
   @ApiCookieAuth('guest-session')

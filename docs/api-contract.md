@@ -1,6 +1,6 @@
-# API contract: I0 baseline, I2 checkout, and I3 payments
+# API contract: I0 baseline, I2 checkout, I3 payments, and I4 browser recovery
 
-Checkout amounts use integer COP units. I2 implements catalog and anonymous checkout reservations. I3 adds the payment-attempt, provider, webhook, reconciliation, and fulfillment lifecycle; the browser checkout remains I4.
+Checkout amounts use integer COP units. I2 implements catalog and anonymous checkout reservations. I3 adds the payment-attempt, provider, webhook, reconciliation, and fulfillment lifecycle. I4 integrates these routes with a React checkout and adds guest-command recovery plus latest-attempt lookup for browser refreshes.
 
 ## I2 implemented records
 
@@ -26,6 +26,7 @@ PostgreSQL transactions and a conditional `UPDATE products ... WHERE physical_qu
 | `GET /api/v1/products` | Lists active seeded products with description, image path, price, currency, and derived available quantity. Before returning, it releases expired I2 reservations in a transaction. |
 | `GET /api/v1/products/{productId}` | Reads one active product; returns `404` if missing or inactive. Also materializes any expired reservations first. |
 | `POST /api/v1/checkouts` | Requires a valid guest cookie and `Idempotency-Key`. Validates one product and quantity, computes server totals, stores the customer/delivery snapshots, and creates the stock hold atomically. First result is `201`; same-key replay is `200`. |
+| `POST /api/v1/checkouts/recover` | Requires the owning guest cookie and the original `Idempotency-Key`; returns the checkout without resending or storing customer data in the browser. Returns `404` if no command record exists and `410` after its PII-derived fingerprint has been erased. |
 | `GET /api/v1/checkouts/{checkoutId}` | Reads only a checkout belonging to the current guest session. Returns `404` for an unknown checkout or one owned by another session. Expiration is applied before the response. |
 
 The initial reservation lasts 600 seconds (10 minutes) by default. An undispatched checkout expires and releases stock transactionally before catalog reads, checkout creation, and checkout reads. `PAYMENT_PENDING` and `UNKNOWN_OUTCOME` holds do not auto-expire. A first confirmed `DECLINED` or `ERROR` starts one 10-minute retry window; if the single retry also ends in confirmed failure, the hold is released immediately. Otherwise, the hold is released when that retry window expires. A replay returns the existing checkout in its current state. To create a fresh hold, the client sends a new checkout idempotency key.
@@ -80,6 +81,7 @@ Database consistency protects each local transition; idempotency makes repeated 
 |---|---|
 | `POST /api/v1/checkouts/{checkoutId}/payment-attempts` | Requires a separate `Idempotency-Key`, a one-time card token from browser-side tokenization, and both current consent tokens. First result is `201`; matching replay is `200`; changed payload under the same key is `409`. The API computes the provider amount and integrity signature, persists the attempt in a short SQL transaction, then calls the provider after commit. |
 | `GET /api/v1/checkouts/{checkoutId}/payment-attempts/{attemptId}` | Requires the owning guest session. Returns attempt ID/number, domain state, amount in whole COP, currency, timestamps, and manual-review flag. When a provider transaction ID is known, it may reconcile through the server-side status API. It never sends a second create request. |
+| `GET /api/v1/checkouts/{checkoutId}/payment-attempts/latest` | Requires the owning guest session; returns and reconciles the latest attempt after refresh. Returns `404` when no attempt exists. It never creates or resends a provider transaction. |
 | `POST /api/v1/webhooks/payment-events` | Verifies event environment, timestamp, dynamic signed properties, checksum, reference, transaction ID, amount, currency, and status. The dynamic property list must sign every field used to authorize a payment. Persists only a minimal receipt and applies the state transition atomically before returning `200`. Duplicate valid events return `200` without repeating effects. Invalid shape/signature returns `400`; an unconfigured verifier returns `503`; storage failures return `500` so delivery can retry. |
 
 The public API and local catalog use whole COP values (`42,000` means COP 42,000). The adapter converts that value to the provider's integer centavos (`4,200,000`) only at the provider boundary. The provider's returned reference, amount, currency, and transaction ID are checked before a state transition.
@@ -91,6 +93,16 @@ The background reconciler claims due attempts under a short PostgreSQL lease, cl
 The minimal event-receipt cleanup defaults to 365 days and can be changed through `PAYMENT_EVENT_RECEIPT_RETENTION_DAYS`; this is a provisional demo default pending user validation. The full signed event body is not stored. `PAYMENT_GATEWAY_EVENTS_SECRET` and `PAYMENT_GATEWAY_INTEGRITY_SECRET` are distinct from the private API key and must remain server-side.
 
 I3 does not expose a user-facing cancellation/void command or refund route. A confirmed provider `VOIDED` status closes the checkout and releases a held reservation. Refund is a separate operation outside this iteration.
+
+## I4 browser payment boundary
+
+The browser submits a payment token only after receiving the sandbox acceptance documents, collecting both explicit consent checkboxes, and tokenizing a permitted sandbox test-card number directly with the configured sandbox. The UI accepts only the two published sandbox card numbers documented by the provider (approved and declined scenarios); it does not prefill either number. The PAN, expiry, CVC, and cardholder name are not sent to the application API, Redux, local storage, or session storage. The payment token is submitted directly to the API from an in-memory request and is not retained in Redux or browser storage.
+
+The payment UI requires `VITE_PAYMENT_GATEWAY_ENVIRONMENT=test`, an HTTPS host whose name identifies a sandbox/test environment, and a public key with the test prefix. The API independently requires `PAYMENT_GATEWAY_ENVIRONMENT=test` and an HTTPS sandbox/test host before sending a provider request. Missing sandbox settings keep the payment form disabled. No live private key belongs in browser configuration. Installments are included in the request fingerprint and passed through to the payment method; the browser asks the user to choose the installment count.
+
+After refresh, the browser restores only the checkout ID from the URL and recovers the guest-owned checkout from the API. A payment recovery marker stores only checkout ID scope and timestamp; while the outcome is unresolved, the UI blocks a second submission and polls the API while visible. An API lookup error also keeps payment submission blocked until the existing attempt can be checked. The checkout command key is stored in session storage so an interrupted checkout can be recovered without persisting its customer/address payload.
+
+I4 does not enable live processing and has not been deployed. The default public configuration has no sandbox URL or public key, so the card flow stays disabled until sandbox values are supplied through local/deployment configuration.
 
 Explicit cancellation/void, operational reconciliation, and fulfillment endpoints are not frozen. A timeout after a request may have been sent is an unknown outcome: retain the hold and reconcile; do not blind-resend, mark it declined, or release stock. Confirmed approval alone may commit inventory and create fulfillment once.
 

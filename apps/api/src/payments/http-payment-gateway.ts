@@ -146,6 +146,11 @@ export class HttpPaymentGateway implements PaymentGateway {
       throw new PaymentGatewayConfigurationError();
     }
 
+    const environment = this.config.get<string>('PAYMENT_GATEWAY_ENVIRONMENT') ?? 'test';
+    if (environment !== 'test') {
+      throw new PaymentGatewayConfigurationError();
+    }
+
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(baseUrl);
@@ -157,7 +162,8 @@ export class HttpPaymentGateway implements PaymentGateway {
       parsedUrl.username !== '' ||
       parsedUrl.password !== '' ||
       parsedUrl.search !== '' ||
-      parsedUrl.hash !== ''
+      parsedUrl.hash !== '' ||
+      !/(sandbox|test)/i.test(parsedUrl.hostname)
     ) {
       throw new PaymentGatewayConfigurationError();
     }

@@ -124,6 +124,21 @@ export class PaymentsController {
     return result.attempt;
   }
 
+  @Get('checkouts/:checkoutId/payment-attempts/latest')
+  @ApiOperation({ summary: 'Read and reconcile the latest payment attempt after refresh' })
+  @ApiCookieAuth('guest-session')
+  @ApiOkResponse({ type: PaymentAttemptResponse })
+  @ApiUnauthorizedResponse({ description: 'Guest session is missing or expired.' })
+  async getLatestAttempt(
+    @Req() request: Request,
+    @Param('checkoutId', new ParseUUIDPipe({ version: '4' })) checkoutId: string,
+  ): Promise<PaymentAttemptResponse> {
+    const sessionId = await this.sessions.requireSessionId(
+      request.cookies?.[GUEST_SESSION_COOKIE],
+    );
+    return this.payments.getLatestAttempt(sessionId, checkoutId);
+  }
+
   @Get('checkouts/:checkoutId/payment-attempts/:attemptId')
   @ApiOperation({ summary: 'Read and, when possible, reconcile payment status' })
   @ApiCookieAuth('guest-session')

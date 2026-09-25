@@ -160,6 +160,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         dto.paymentToken,
         dto.acceptanceToken,
         dto.personalDataAuthorizationToken,
+        dto.installments ?? 1,
       ]),
     );
 
@@ -296,7 +297,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         amountCop: prepared.context.amountCop,
         currency: prepared.context.currency,
         customerEmail: prepared.context.customerEmail,
-        installments: 1,
+        installments: dto.installments ?? 1,
         paymentToken: dto.paymentToken,
         reference: prepared.context.reference,
       });
@@ -372,10 +373,38 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     return initial;
   }
 
+  async getLatestAttempt(
+    sessionId: string,
+    checkoutId: string,
+  ): Promise<PaymentAttemptView> {
+    const latest = await this.database.query<{ id: string }>(
+      `
+        SELECT attempt.id
+        FROM payment_attempts AS attempt
+        JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
+        WHERE checkout.id = $1 AND checkout.guest_session_id = $2
+        ORDER BY attempt.attempt_number DESC
+        LIMIT 1
+      `,
+      [checkoutId, sessionId],
+    );
+    const attemptId = latest.rows[0]?.id;
+    if (!attemptId) throw new NotFoundException('No payment attempt exists for this checkout.');
+    return this.getAttempt(sessionId, checkoutId, attemptId);
+  }
+
   async receiveEvent(
     envelope: unknown,
     headerChecksum?: string,
   ): Promise<void> {
+    const environment = this.config.getOrThrow<'test' | 'prod'>(
+      'PAYMENT_GATEWAY_ENVIRONMENT',
+    );
+    if (environment !== 'test') {
+      throw new ServiceUnavailableException(
+        'Only sandbox payment events are accepted by this application.',
+      );
+    }
     const eventSecret = this.config.get<string>('PAYMENT_GATEWAY_EVENTS_SECRET')?.trim();
     if (!eventSecret) {
       throw new ServiceUnavailableException('Payment event verification is not configured.');
@@ -386,7 +415,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       event = verifyProviderEvent(
         asEventEnvelope(envelope),
         eventSecret,
-        this.config.getOrThrow<'test' | 'prod'>('PAYMENT_GATEWAY_ENVIRONMENT'),
+        environment,
         headerChecksum,
       );
     } catch {
