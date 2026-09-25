@@ -119,10 +119,10 @@ variable "payment_gateway_secret_arn" {
 
   validation {
     condition = var.payment_gateway_secret_arn == "" || can(regex(
-      "^arn:aws[a-z-]*:secretsmanager:${var.aws_region}:[0-9]{12}:secret:.+$",
+      "^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$",
       var.payment_gateway_secret_arn,
     ))
-    error_message = "payment_gateway_secret_arn must be a Secrets Manager ARN in aws_region, or empty to disable provider integration."
+    error_message = "payment_gateway_secret_arn must be a valid Secrets Manager ARN, or empty to disable provider integration."
   }
 }
 

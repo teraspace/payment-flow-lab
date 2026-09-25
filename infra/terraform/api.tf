@@ -76,6 +76,13 @@ resource "aws_iam_role_policy" "payment_gateway_secret" {
   name = "${local.resource_prefix}-payment-gateway-test-secret"
   role = aws_iam_role.task_execution.id
 
+  lifecycle {
+    precondition {
+      condition     = startswith(var.payment_gateway_secret_arn, "arn:aws:secretsmanager:${var.aws_region}:")
+      error_message = "payment_gateway_secret_arn must refer to a Secrets Manager secret in aws_region."
+    }
+  }
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
