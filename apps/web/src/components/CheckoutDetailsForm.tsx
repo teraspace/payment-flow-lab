@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { loadAcceptanceDocumentsFromApi } from '../app/service-api';
 import type { Product } from '../app/service-api';
 import {
@@ -24,6 +24,7 @@ interface CheckoutDetailsFormProps {
   error?: string;
   onBack: () => void;
   onDraftChange?: (details: CheckoutDetails) => void;
+  returnFocusTo?: HTMLElement | null;
   onSubmit: (
     details: CheckoutDetails,
     paymentToken: string,
@@ -40,6 +41,7 @@ export function CheckoutDetailsForm({
   onBack,
   onDraftChange,
   onSubmit,
+  returnFocusTo,
 }: CheckoutDetailsFormProps) {
   const maximumQuantity = Math.max(1, Math.min(product.availableQuantity, 99));
   const paymentConfiguration = getSandboxPaymentConfiguration();
@@ -51,6 +53,23 @@ export function CheckoutDetailsForm({
   const [acceptanceLoading, setAcceptanceLoading] = useState(paymentConfiguration.ready);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [acceptedPersonalData, setAcceptedPersonalData] = useState(false);
+  const dialogRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    const previouslyFocused = returnFocusTo ?? document.activeElement;
+    headingRef.current?.focus();
+    return () => {
+      if (previouslyFocused instanceof HTMLElement && previouslyFocused.isConnected) {
+        previouslyFocused.focus();
+        window.requestAnimationFrame(() => {
+          if (previouslyFocused.isConnected && document.activeElement === document.body) {
+            previouslyFocused.focus();
+          }
+        });
+      }
+    };
+  }, [returnFocusTo]);
 
   useEffect(() => {
     if (!paymentConfiguration.ready) return;
@@ -62,11 +81,29 @@ export function CheckoutDetailsForm({
     return () => { active = false; };
   }, [paymentConfiguration.ready]);
   useEffect(() => {
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === 'Escape' && !busy && !tokenizing) onBack();
+    function handleModalKeys(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !busy && !tokenizing) {
+        onBack();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
+      ) ?? []);
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first || !last) return;
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === headingRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
+    window.addEventListener('keydown', handleModalKeys);
+    return () => window.removeEventListener('keydown', handleModalKeys);
   }, [busy, onBack, tokenizing]);
 
   function readDetails(form: HTMLFormElement, nextQuantity = quantity): CheckoutDetails {
@@ -168,12 +205,13 @@ export function CheckoutDetailsForm({
         aria-labelledby="details-title"
         aria-modal="true"
         className="checkout-modal"
+        ref={dialogRef}
         role="dialog"
       >
         <div className="checkout-modal__heading">
           <div>
             <p className="eyebrow">Paso 2 de 5 · Tarjeta y entrega</p>
-            <h2 id="details-title" tabIndex={-1}>
+            <h2 id="details-title" ref={headingRef} tabIndex={-1}>
               {existingCheckout ? 'Ingresa tu tarjeta de prueba' : 'Pay with credit card'}
             </h2>
             <p className="form-intro">

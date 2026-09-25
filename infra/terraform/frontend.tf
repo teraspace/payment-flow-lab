@@ -39,6 +39,37 @@ resource "aws_cloudfront_origin_access_control" "web" {
   signing_protocol                  = "sigv4"
 }
 
+resource "aws_cloudfront_response_headers_policy" "web_security" {
+  name    = "${local.resource_prefix}-web-security"
+  comment = "Security headers for the static checkout application."
+
+  security_headers_config {
+    content_security_policy {
+      content_security_policy = "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self' data:; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'"
+      override                = true
+    }
+
+    content_type_options {
+      override = true
+    }
+
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+
+    referrer_policy {
+      referrer_policy = "no-referrer"
+      override        = true
+    }
+
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      override                   = true
+    }
+  }
+}
+
 resource "aws_cloudfront_distribution" "app" {
   enabled         = true
   is_ipv6_enabled = true
@@ -65,12 +96,13 @@ resource "aws_cloudfront_distribution" "app" {
   default_root_object = "index.html"
 
   default_cache_behavior {
-    target_origin_id       = "private-web-bucket"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
-    cached_methods         = ["GET", "HEAD", "OPTIONS"]
-    compress               = true
-    cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+    target_origin_id           = "private-web-bucket"
+    viewer_protocol_policy     = "redirect-to-https"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS"]
+    cached_methods             = ["GET", "HEAD", "OPTIONS"]
+    compress                   = true
+    cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.web_security.id
   }
 
   ordered_cache_behavior {

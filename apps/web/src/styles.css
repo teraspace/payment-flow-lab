@@ -73,7 +73,12 @@ h1, h2, h3 { color: var(--ink); font-family: 'Avenir Next', 'Segoe UI', sans-ser
 .progress-step--current { color: var(--green); }
 .progress-step--current .progress-number, .progress-step--complete .progress-number { border-color: var(--green); background: var(--green); color: white; }
 .progress-line { position: absolute; z-index: 0; top: 14px; right: 10%; left: 10%; height: 2px; background: #dce5de; }
-.progress-line span { display: block; height: 100%; background: #3b8a68; transition: width .25s ease; }
+.progress-fill { display: block; height: 100%; background: #3b8a68; transition: width .25s ease; }
+.progress-fill--step-1 { width: 0; }
+.progress-fill--step-2 { width: 25%; }
+.progress-fill--step-3 { width: 50%; }
+.progress-fill--step-4 { width: 75%; }
+.progress-fill--step-5 { width: 100%; }
 
 .catalog-section { padding: 18px 0 40px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 22px; }

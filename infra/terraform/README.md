@@ -5,13 +5,14 @@ This stack hosts a static React app, a NestJS API, and PostgreSQL. Checkout and 
 ## Architecture and exposure
 
 - React assets live in a private S3 bucket and are served over HTTPS through CloudFront Origin Access Control.
+- CloudFront's static cache behavior attaches a response headers policy for CSP, HSTS, `nosniff`, frame denial, and no-referrer. The `/api/*` behavior keeps the API's Helmet headers. The static policy takes effect only after the distribution update is applied.
 - `/api/*` routes through CloudFront VPC Origins to a private Application Load Balancer and then to NestJS on ECS Fargate.
 - PostgreSQL runs in private subnets, is encrypted at rest, is not publicly accessible, and accepts connections only from the API task security group.
 - The Fargate task runs in public subnets with a public IPv4 address so it can pull from ECR and send logs without a NAT Gateway. Its security group accepts inbound port 3000 only from the load balancer. The load balancer is private and its security group accepts HTTP only from CloudFront's AWS managed origin-facing prefix list.
 - AWS manages the RDS master password in Secrets Manager. Terraform state contains the secret ARN, not the database password. The container receives the password at task startup and verifies PostgreSQL TLS with the AWS RDS CA bundle.
 - CloudFront uses its default `cloudfront.net` HTTPS hostname; this stack does not create a domain name, Route 53 zone, or ACM certificate. AWS fixes the viewer security policy at `TLSv1` for the default certificate regardless of `minimum_protocol_version`; enforcing TLS 1.2 or newer requires an alternate domain name and a custom certificate. See [AWS CloudFront certificate settings](https://docs.aws.amazon.com/cli/latest/reference/cloudfront/update-distribution.html).
 
-The API image is ARM64, matching the Fargate task platform and reducing compute cost. The application is still a single NestJS service. There is no NAT Gateway, public database, Kubernetes cluster, or payment-provider configuration.
+The API image is ARM64, matching the Fargate task platform and reducing compute cost. The application is still a single NestJS service. There is no NAT Gateway, public database, Kubernetes cluster, or live payment-provider configuration; sandbox credentials are injected through Secrets Manager.
 
 ## Prerequisites
 

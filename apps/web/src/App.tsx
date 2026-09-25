@@ -42,6 +42,7 @@ export function App() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [checkoutDraft, setCheckoutDraft] = useState<CheckoutDetails | null>(() => readCheckoutDraft());
   const [modalOpen, setModalOpen] = useState(() => readCheckoutDraft() !== null);
+  const [modalReturnFocus, setModalReturnFocus] = useState<HTMLElement | null>(null);
   const [paymentToken, setPaymentToken] = useState<string | null>(null);
   const [paymentAcceptance, setPaymentAcceptance] = useState<AcceptanceDocuments | null>(null);
   const [localPaymentAttempt, setLocalPaymentAttempt] = useState<PaymentAttempt | null>(null);
@@ -94,6 +95,11 @@ export function App() {
     ) && !(paymentToken && paymentAcceptance && canPayAgain(checkout, latestAttempt)),
   );
   const modalVisible = modalOpen && modalProduct !== null;
+
+  function openModal(trigger?: HTMLElement) {
+    setModalReturnFocus(trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+    setModalOpen(true);
+  }
 
   useEffect(() => {
     void initializeGuestSession().unwrap().catch(() => undefined);
@@ -273,8 +279,8 @@ export function App() {
 
   return (
     <div className="site-shell">
-      <a className="skip-link" href="#main-content">Saltar al contenido</a>
-      <header className="topbar">
+      <a aria-hidden={modalVisible || undefined} className="skip-link" href="#main-content" inert={modalVisible}>Saltar al contenido</a>
+      <header aria-hidden={modalVisible || undefined} className="topbar" inert={modalVisible}>
         <a
           aria-disabled={checkoutId ? true : undefined}
           className="wordmark"
@@ -294,7 +300,7 @@ export function App() {
         </div>
       </header>
 
-      <main aria-hidden={modalVisible || undefined} className="page-shell" id="main-content">
+      <main aria-hidden={modalVisible || undefined} className="page-shell" id="main-content" inert={modalVisible}>
         <div className="page-intro">
           <div>
             <p className="eyebrow">Checkout engineering challenge</p>
@@ -376,9 +382,9 @@ export function App() {
                 canRetry={canPayAgain(checkout, latestAttempt)}
                 checkout={checkout}
                 onReturn={returnToCatalog}
-                onRetry={() => {
+                onRetry={(trigger) => {
                   setCheckoutDraft(detailsFromCheckout(checkout));
-                  setModalOpen(true);
+                  openModal(trigger);
                 }}
               />
             </section>
@@ -403,9 +409,9 @@ export function App() {
                     setPaymentAcceptance(null);
                   }}
                   onRefreshAttempt={refreshCheckoutAndAttempt}
-                  onRequestCard={() => {
+                  onRequestCard={(trigger) => {
                     setCheckoutDraft(detailsFromCheckout(checkout));
-                    setModalOpen(true);
+                    openModal(trigger);
                   }}
                   onAttemptResult={setLocalPaymentAttempt}
                 />
@@ -442,20 +448,20 @@ export function App() {
                 : undefined}
               isLoading={productsQuery.isLoading}
               onRetry={() => void productsQuery.refetch()}
-            onSelect={(product) => {
-              setCheckoutError(null);
-              setReturnedFromResult(false);
-              setSelectedProduct(product);
-              const draft: CheckoutDetails = {
-                productId: product.id,
-                quantity: 1,
-                customer: { fullName: '', email: '' },
-                delivery: { recipient: '', address: '' },
-              };
-              setCheckoutDraft(draft);
-              writeCheckoutDraft(draft);
-              setModalOpen(true);
-            }}
+              onSelect={(product, trigger) => {
+                setCheckoutError(null);
+                setReturnedFromResult(false);
+                setSelectedProduct(product);
+                const draft: CheckoutDetails = {
+                  productId: product.id,
+                  quantity: 1,
+                  customer: { fullName: '', email: '' },
+                  delivery: { recipient: '', address: '' },
+                };
+                setCheckoutDraft(draft);
+                writeCheckoutDraft(draft);
+                openModal(trigger);
+              }}
               products={productsQuery.data ?? []}
             />
           </>
@@ -486,10 +492,11 @@ export function App() {
           onDraftChange={checkoutId ? undefined : updateCheckoutDraft}
           onSubmit={submitCheckout}
           product={modalProduct}
+          returnFocusTo={modalReturnFocus}
         />
       ) : null}
 
-      <footer className="page-footer">
+      <footer aria-hidden={modalVisible || undefined} className="page-footer" inert={modalVisible}>
         <span>Payment Flow Lab</span>
         <span>Los pagos de esta experiencia son exclusivamente de sandbox.</span>
       </footer>
@@ -518,7 +525,9 @@ function CheckoutProgress({ activeStep }: { activeStep: number }) {
           );
         })}
       </ol>
-      <div className="progress-line" aria-hidden="true"><span style={{ width: `${((activeStep - 1) / 4) * 100}%` }} /></div>
+      <div className="progress-line" aria-hidden="true">
+        <span className={`progress-fill progress-fill--step-${activeStep}`} />
+      </div>
     </nav>
   );
 }
@@ -534,7 +543,7 @@ function FinalStatus({
   canRetry: boolean;
   checkout: Checkout;
   onReturn: () => void;
-  onRetry: () => void;
+  onRetry: (trigger: HTMLButtonElement) => void;
 }) {
   const approved = attempt?.state === 'APPROVED' || checkout.state === 'PAID';
   const title = approved
@@ -562,7 +571,7 @@ function FinalStatus({
       <p>{description}</p>
       <p className="final-status-countdown">Volveremos al catálogo en unos segundos.</p>
       {canRetry ? (
-        <button className="button button--secondary" onClick={onRetry} type="button">
+        <button className="button button--secondary" onClick={(event) => onRetry(event.currentTarget)} type="button">
           Reintentar con una nueva tarjeta de prueba
         </button>
       ) : null}
