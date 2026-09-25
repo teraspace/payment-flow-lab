@@ -110,12 +110,12 @@ curl --fail --silent --show-error "$application_url/api/v1/docs" -o /dev/null
 
 ## Updating the deployed API with a database migration
 
-For a backward-compatible schema migration, register the new migration task definition independently while leaving the running API on its current image. Replace `i2-<commit>` below with the immutable image tag built from the reviewed feature commit. Keep the API image at its currently deployed tag (`i1-bootstrap` for the current stack):
+For a backward-compatible schema migration, register the new migration task definition independently while leaving the running API on its current image. Use the immutable tag built from the reviewed feature commit for `migration_image_tag`; keep `api_image_tag` at the currently deployed API image (`i3-23f9aa2` as of the I3 deployment):
 
 ```sh
 ../../scripts/terraform-aws.sh plan \
-  -var='api_image_tag=i1-bootstrap' \
-  -var='migration_image_tag=i2-<commit>' \
+  -var='api_image_tag=i3-23f9aa2' \
+  -var='migration_image_tag=iN-<commit>' \
   -out=tfplan-migration
 ../../scripts/terraform-aws.sh show tfplan-migration
 ```
@@ -126,13 +126,15 @@ Only after the migration succeeds, review the service rollout plan with both ima
 
 ```sh
 ../../scripts/terraform-aws.sh plan \
-  -var='api_image_tag=i2-<commit>' \
-  -var='migration_image_tag=i2-<commit>' \
+  -var='api_image_tag=iN-<commit>' \
+  -var='migration_image_tag=iN-<commit>' \
   -out=tfplan-api
 ../../scripts/terraform-aws.sh show tfplan-api
 ```
 
 That plan updates the API task definition and ECS service; apply it only after review. The migration variable defaults to `api_image_tag`, preserving the single-tag behavior for existing deployments that do not set it explicitly.
+
+The I3 rollout plan also showed generated S3 web-asset differences because the ignored local `apps/web/dist` did not match the deployed bundle. Those web objects were outside I3 and were not applied. If a future API-only rollout plan contains unrelated web or infrastructure actions, stop and review the drift separately; do not include it in the API release. I3 used narrowly targeted migration/API ECS plans for that exceptional case. This is not the default Terraform workflow.
 
 ## Cleanup
 

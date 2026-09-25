@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Iterations 0 through I2 are complete. I2 is merged in PR #8 and deployed at [the demo URL](https://d2ump7odi96dfi.cloudfront.net). I3 adds the durable payment lifecycle, provider adapter, signed webhooks, reconciliation, and inventory/fulfillment transitions; it is under review on a feature branch and has not been merged or deployed. The deployed React app is still the I1 shell, so the customer-facing checkout experience remains I4. Review the [requirements and scorecard](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), [payment operations runbook](docs/payment-operations.md), and [open decisions](docs/open-decisions.md).
+Iterations 0 through I3 are complete. I2 is merged in PR #8, and I3 is merged in PR #10 and deployed at [the demo URL](https://d2ump7odi96dfi.cloudfront.net). I3 adds durable payment attempts, a provider adapter, signed webhooks, reconciliation, and inventory/fulfillment transitions; the deployed API uses the immutable image `i3-23f9aa2`. The deployed React app is still the I1 shell, so the customer-facing checkout experience remains I4. No provider credentials or real payments were used. Review the [requirements and scorecard](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), [payment operations runbook](docs/payment-operations.md), and [open decisions](docs/open-decisions.md).
 
 ## Engineering rules
 
