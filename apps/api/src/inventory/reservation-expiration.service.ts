@@ -17,7 +17,7 @@ export class ReservationExpirationService {
       JOIN checkouts AS c ON c.id = r.checkout_id
       WHERE r.state = 'HELD'
         AND r.expires_at <= now()
-        AND c.state = 'RESERVED'
+        AND c.state IN ('RESERVED', 'PAYMENT_FAILED')
       ORDER BY r.product_id, r.id
       FOR UPDATE OF r
     `);
@@ -59,7 +59,7 @@ export class ReservationExpirationService {
         `
           UPDATE checkouts
           SET state = 'EXPIRED', updated_at = now()
-          WHERE id = $1 AND state = 'RESERVED'
+          WHERE id = $1 AND state IN ('RESERVED', 'PAYMENT_FAILED')
         `,
         [transitioned.checkout_id],
       );

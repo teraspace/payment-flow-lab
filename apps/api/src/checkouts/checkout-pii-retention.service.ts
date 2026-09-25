@@ -79,6 +79,14 @@ export class CheckoutPiiRetentionService implements OnModuleInit, OnModuleDestro
               AND record.fingerprint_hash IS NOT NULL
             RETURNING record.id
           ),
+          redacted_payment_fingerprints AS (
+            UPDATE payment_attempts AS attempt
+            SET request_fingerprint_hash = NULL
+            FROM candidates AS candidate
+            WHERE attempt.checkout_id = candidate.id
+              AND attempt.request_fingerprint_hash IS NOT NULL
+            RETURNING attempt.id
+          ),
           updated_checkouts AS (
             UPDATE checkouts AS checkout
             SET updated_at = now()

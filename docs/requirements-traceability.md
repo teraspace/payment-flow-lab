@@ -43,9 +43,9 @@ The PDF names allowed stacks and an AWS preference, but does not require a parti
 
 ## Provider integration facts checked for planning
 
-The current official provider documentation was reviewed on 2026-09-24. It describes browser-side card tokenization and acceptance tokens, a server-side transaction API whose initial successful creation is `PENDING`, terminal states including `APPROVED`, `DECLINED`, `VOIDED`, and `ERROR`, and signed transaction events. It documents lookup by provider transaction ID; it does not establish that a unique reference gives replay-safe idempotency or a general status lookup by reference. Therefore a duplicate-reference response is not treated as proof that the first request succeeded.
+The current official provider documentation was rechecked on 2026-09-24. It describes browser-side card tokenization, two separate consent tokens, transaction amounts in integer centavos, an initial successful creation state of `PENDING`, terminal states including `APPROVED`, `DECLINED`, `VOIDED`, and `ERROR`, server-side lookup by provider transaction ID, and signed events. It requires a unique reference but does not establish a remote idempotency guarantee. Therefore an ambiguous timeout or duplicate-reference response is not treated as proof that a charge succeeded or failed.
 
-These are integration facts to recheck immediately before I3 because provider contracts can change. No provider credentials, sandbox secrets, or company-specific URL are kept in this public project documentation.
+I3 verifies these contract details with unit tests and a deterministic provider double against real PostgreSQL. No live sandbox credentials, provider secrets, or provider-specific URL are kept in this public project documentation. A real sandbox pass remains pending until test credentials are available.
 
 ## I0 approval checklist
 
@@ -65,4 +65,14 @@ These are integration facts to recheck immediately before I3 because provider co
 - The user approved the demo charges, 30-day guest-session lifetime, and 30-day PII redaction period from checkout creation. The implementation clears the PII-derived idempotency fingerprint too.
 - PR #8 merged as `5626a44`. Hosted `quality`, `database-migrations`, and `infrastructure` checks passed. The ARM64 API image was deployed to Fargate after migration exit code `0`; ECS stabilized at 1/1, and the final Terraform plan reports no changes.
 - Public smoke checks returned HTTP 200 for `/`, `/api/v1/health/live`, `/api/v1/health/ready`, `/api/v1/products`, and `/api/v1/docs`. A synthetic checkout returned `201`, an idempotent replay returned `200`, and checkout recovery returned `200` with the approved COP 42,000 total. The synthetic row was removed and the catalog returned to 7 available / 0 reserved notebook units.
-- Cost Explorer access is disabled for this account, so this turn could not verify actual charges or remaining credits. The Terraform README retains the estimated baseline, excluding variable usage. No final rubric score is awarded by this evidence alone; the React checkout UI and payment-provider flow remain future work.
+- Cost Explorer access is disabled for this account, so this turn could not verify actual charges or remaining credits. The Terraform README retains the estimated baseline, excluding variable usage. No final rubric score is awarded by this evidence alone; the customer-facing React checkout and live payment flow remain future work.
+
+## I3 payment lifecycle implementation evidence (awaiting iteration validation)
+
+- The API persists idempotent payment attempts before dispatch, performs the provider call outside SQL transactions, and never sends a second create request when the same attempt is replayed.
+- A confirmed decline/error opens one explicit 10-minute retry window. Pending and unknown outcomes keep their reservation; unknown outcomes block another attempt. A reconciliation loop queries known provider transaction IDs without holding database locks across network calls and flags old unresolved attempts for review.
+- Signed events are checked against environment, timestamp, dynamic signed fields, event secret, reference, transaction ID, amount, and currency. Minimal event receipts are deduplicated before a `200` acknowledgement. Approval, reservation commitment, stock decrement, and one fulfillment row are atomic in PostgreSQL.
+- A late approval after reservation release is recorded as `FULFILLMENT_EXCEPTION`; inventory is not decremented from stock that may have been reassigned.
+- Internal whole-COP prices are converted to provider centavos only at the adapter boundary. Raw card and consent tokens are not persisted or logged; the request fingerprint is cleared by the 30-day checkout retention job.
+- Controlled PostgreSQL integration evidence: 36 Jest tests passed across five suites; migrations applied and rolled back; lint, typecheck, full app build, zero-moderate vulnerability audit, Terraform format/validate, and `git diff --check` passed. Hosted PR checks are still pending.
+- No sandbox credentials were used and no real payment was created. Manual review threshold (30 minutes) and minimal receipt retention (365 days) are configurable defaults awaiting user validation; no cancellation UI, refund path, or admin UI is included in I3.

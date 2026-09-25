@@ -81,7 +81,8 @@ describe('checkout API (PostgreSQL)', () => {
     await database.query(`
       DROP TRIGGER IF EXISTS fail_test_reservation_insert ON reservations;
       DROP FUNCTION IF EXISTS fail_test_reservation_insert();
-      TRUNCATE idempotency_records, reservations, checkout_items, checkouts,
+      TRUNCATE payment_event_receipts, fulfillments, payment_attempts,
+               idempotency_records, reservations, checkout_items, checkouts,
                deliveries, customers, guest_sessions;
       UPDATE products
       SET physical_quantity = CASE sku
@@ -104,7 +105,8 @@ describe('checkout API (PostgreSQL)', () => {
   afterAll(async () => {
     await app.close();
     await database.query(`
-      TRUNCATE idempotency_records, reservations, checkout_items, checkouts,
+      TRUNCATE payment_event_receipts, fulfillments, payment_attempts,
+               idempotency_records, reservations, checkout_items, checkouts,
                deliveries, customers, guest_sessions;
     `);
     await database.end();

@@ -16,7 +16,7 @@ The API is planned as one modular service. This keeps the challenge small enough
 
 ## Project status
 
-Iteration 0 and I1 are complete. I2 is merged in PR #8 and deployed at [the demo URL](https://d2ump7odi96dfi.cloudfront.net). The API provides a seeded catalog, anonymous guest-session ownership, checkout snapshots, atomic stock holds, expiry, scoped idempotency, and 30-day PII redaction. The deployed React app is still the I1 shell; payment-provider integration and the customer-facing checkout UI remain future iterations. Review the [requirements and scorecard](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), and [open decisions](docs/open-decisions.md).
+Iterations 0 through I2 are complete. I2 is merged in PR #8 and deployed at [the demo URL](https://d2ump7odi96dfi.cloudfront.net). I3 adds the durable payment lifecycle, provider adapter, signed webhooks, reconciliation, and inventory/fulfillment transitions; it is under review on a feature branch and has not been merged or deployed. The deployed React app is still the I1 shell, so the customer-facing checkout experience remains I4. Review the [requirements and scorecard](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), [payment operations runbook](docs/payment-operations.md), and [open decisions](docs/open-decisions.md).
 
 ## Engineering rules
 
@@ -47,7 +47,7 @@ The initial migration creates a product catalog table and database checks for no
 
 ## Data model and API
 
-PostgreSQL is the authority for product price and inventory. `products.reserved_quantity` is changed only by a conditional update inside the same transaction that creates a `checkouts` row, its `checkout_items` price snapshot, a `reservations` row, and an `idempotency_records` row. `customers` and `deliveries` store only the name/email and recipient/address fields needed by the demo; an API background job clears them, and the PII-derived idempotency fingerprint, 30 days after checkout creation. A guest session is represented by an opaque HttpOnly cookie; PostgreSQL stores only its token hash. Full endpoint shapes and the separation between live I2 routes and planned payment routes are documented in [`docs/api-contract.md`](docs/api-contract.md).
+PostgreSQL is the authority for product price and inventory. `products.reserved_quantity` is changed only by a conditional update inside the same transaction that creates a `checkouts` row, its `checkout_items` price snapshot, a `reservations` row, and an `idempotency_records` row. `customers` and `deliveries` store only the name/email and recipient/address fields needed by the demo; an API background job clears those fields and PII-derived request fingerprints after 30 days. A guest session is represented by an opaque HttpOnly cookie; PostgreSQL stores only its token hash. The I3 data model adds durable payment attempts, minimal event receipts, and one fulfillment row per checkout. Full endpoint shapes and iteration status are documented in [`docs/api-contract.md`](docs/api-contract.md).
 
 Run the API integration suite with `npm run test:api`. It recreates and drops only a local database whose name ends in `_test` (default `payment_flow_lab_test`), applies and rolls back migrations, and uses independent PostgreSQL connections for concurrency checks. It does not reset the developer database named in `.env`.
 
