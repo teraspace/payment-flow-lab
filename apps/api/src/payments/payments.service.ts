@@ -40,12 +40,15 @@ const DISPATCH_STALE_SECONDS = 20;
 const EVENT_MAX_AGE_SECONDS = 48 * 60 * 60;
 const PAYMENT_RELEVANT_STATES = ['DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME', 'APPROVED', 'DECLINED', 'ERROR', 'VOIDED'];
 
-interface CheckoutForPayment extends QueryResultRow {
+interface CheckoutPaymentData extends QueryResultRow {
   id: string;
   state: string;
   total_minor: string;
   currency: string;
   customer_email: string | null;
+}
+
+interface CheckoutForPayment extends CheckoutPaymentData {
   reservation_state: 'HELD' | 'RELEASED' | 'COMMITTED';
   reservation_expires_at: Date;
 }
@@ -70,7 +73,7 @@ interface AttemptRow extends QueryResultRow {
   updated_at: Date;
 }
 
-interface AttemptContext extends QueryResultRow {
+interface AttemptPaymentData extends QueryResultRow {
   id: string;
   checkout_id: string;
   attempt_number: number;
@@ -82,9 +85,13 @@ interface AttemptContext extends QueryResultRow {
   provider_status: ProviderTransactionStatus | null;
   provider_status_updated_at: Date | null;
   request_fingerprint_hash: string | null;
+}
+
+interface AttemptContext extends AttemptPaymentData {
   reservation_id: string;
   reservation_state: 'HELD' | 'RELEASED' | 'COMMITTED';
   reservation_expires_at: Date;
+  reservation_expired: boolean;
   reservation_product_id: string;
   reservation_quantity: number;
   checkout_state: string;
@@ -103,7 +110,14 @@ interface AttemptResult {
   replayed: boolean;
 }
 
-type EventDisposition = 'APPLIED' | 'DUPLICATE' | 'UNMATCHED' | 'MISMATCH' | 'STALE' | 'IGNORED';
+type EventDisposition =
+  | 'APPLIED'
+  | 'DUPLICATE'
+  | 'UNMATCHED'
+  | 'MISMATCH'
+  | 'STALE'
+  | 'CONTRADICTORY'
+  | 'IGNORED';
 
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnModuleDestroy {
@@ -410,7 +424,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       if (!receiptId) return;
 
       const attempt = await client.query<{ id: string }>(
-        'SELECT id FROM payment_attempts WHERE provider_reference = $1 FOR UPDATE',
+        'SELECT id FROM payment_attempts WHERE provider_reference = $1',
         [event.reference],
       );
       const attemptId = attempt.rows[0]?.id;
@@ -434,21 +448,38 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     sessionId: string,
     checkoutId: string,
   ): Promise<CheckoutForPayment | null> {
-    const result = await client.query<CheckoutForPayment>(
+    const checkout = await client.query<CheckoutPaymentData>(
       `
         SELECT c.id, c.state, c.total_minor, c.currency,
-               customer.email AS customer_email,
-               reservation.state AS reservation_state,
-               reservation.expires_at AS reservation_expires_at
+               customer.email AS customer_email
         FROM checkouts AS c
         JOIN customers AS customer ON customer.id = c.customer_id
-        JOIN reservations AS reservation ON reservation.checkout_id = c.id
         WHERE c.id = $1 AND c.guest_session_id = $2
-        FOR UPDATE OF c, reservation
+        FOR UPDATE OF c
       `,
       [checkoutId, sessionId],
     );
-    return result.rows[0] ?? null;
+    const lockedCheckout = checkout.rows[0];
+    if (!lockedCheckout) return null;
+
+    const reservation = await client.query<{
+      state: CheckoutForPayment['reservation_state'];
+      expires_at: Date;
+    }>(
+      `SELECT state, expires_at
+       FROM reservations
+       WHERE checkout_id = $1
+       FOR UPDATE`,
+      [checkoutId],
+    );
+    const lockedReservation = reservation.rows[0];
+    if (!lockedReservation) return null;
+
+    return {
+      ...lockedCheckout,
+      reservation_state: lockedReservation.state,
+      reservation_expires_at: lockedReservation.expires_at,
+    };
   }
 
   private async markLocalFailure(attemptId: string): Promise<void> {
@@ -479,17 +510,19 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       await client.query(
         `
           UPDATE payment_attempts
-          SET state = 'ERROR', provider_status = 'ERROR',
+          SET state = 'REJECTED_NO_TRANSACTION',
               provider_http_status = $2,
-              provider_status_updated_at = now(), reconciliation_lease_until = NULL,
+              reconciliation_lease_until = NULL,
               updated_at = now()
           WHERE id = $1
         `,
         [attemptId, httpStatus],
       );
-      if (row.reservation_state === 'HELD') {
-        await this.handleConfirmedFailure(client, row.checkout_id, row.reservation_id);
-      }
+      await client.query(
+        `UPDATE checkouts SET state = 'RESERVED', updated_at = now()
+         WHERE id = $1 AND state = 'PAYMENT_PENDING'`,
+        [row.checkout_id],
+      );
     });
   }
 
@@ -581,11 +614,21 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (attempt.state === 'APPROVED') {
+      if (transaction.status === 'APPROVED') {
+        await client.query(
+          `UPDATE payment_attempts SET reconciliation_lease_until = NULL, updated_at = now() WHERE id = $1`,
+          [attemptId],
+        );
+        return 'DUPLICATE';
+      }
       await client.query(
-        `UPDATE payment_attempts SET reconciliation_lease_until = NULL, updated_at = now() WHERE id = $1`,
+        `UPDATE payment_attempts
+         SET manual_review_required_at = COALESCE(manual_review_required_at, now()),
+             reconciliation_lease_until = NULL, last_reconciled_at = now(), updated_at = now()
+         WHERE id = $1`,
         [attemptId],
       );
-      return transaction.status === 'APPROVED' ? 'DUPLICATE' : 'STALE';
+      return 'CONTRADICTORY';
     }
     if (
       ['DECLINED', 'ERROR', 'VOIDED'].includes(attempt.state) &&
@@ -639,9 +682,12 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (nextState === 'APPROVED') {
+      const retryWindowExpired =
+        attempt.checkout_state === 'PAYMENT_FAILED' && attempt.reservation_expired;
       if (
         attempt.reservation_state === 'HELD' &&
-        !['EXPIRED', 'CANCELLED'].includes(attempt.checkout_state)
+        !['EXPIRED', 'CANCELLED'].includes(attempt.checkout_state) &&
+        !retryWindowExpired
       ) {
         const inventory = await client.query(
           `
@@ -678,6 +724,9 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
           [attempt.checkout_id],
         );
       } else {
+        if (attempt.reservation_state === 'HELD') {
+          await this.releaseReservation(client, attempt.reservation_id);
+        }
         await client.query(
           `UPDATE checkouts SET state = 'FULFILLMENT_EXCEPTION', updated_at = now() WHERE id = $1`,
           [attempt.checkout_id],
@@ -722,27 +771,64 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     client: PoolClient,
     attemptId: string,
   ): Promise<AttemptContext | null> {
-    const result = await client.query<AttemptContext>(
+    const owner = await client.query<{ checkout_id: string }>(
+      'SELECT checkout_id FROM payment_attempts WHERE id = $1',
+      [attemptId],
+    );
+    const checkoutId = owner.rows[0]?.checkout_id;
+    if (!checkoutId) return null;
+
+    const checkout = await client.query<{ state: string }>(
+      'SELECT state FROM checkouts WHERE id = $1 FOR UPDATE',
+      [checkoutId],
+    );
+    const checkoutState = checkout.rows[0]?.state;
+    if (!checkoutState) return null;
+
+    const reservation = await client.query<{
+      id: string;
+      state: AttemptContext['reservation_state'];
+      expires_at: Date;
+      is_expired: boolean;
+      product_id: string;
+      quantity: number;
+    }>(
+      `SELECT id, state, expires_at, expires_at <= clock_timestamp() AS is_expired,
+              product_id, quantity
+       FROM reservations
+       WHERE checkout_id = $1
+       FOR UPDATE`,
+      [checkoutId],
+    );
+    const lockedReservation = reservation.rows[0];
+    if (!lockedReservation) return null;
+
+    const attempt = await client.query<AttemptPaymentData>(
       `
         SELECT attempt.id, attempt.checkout_id, attempt.attempt_number,
                attempt.state, attempt.provider_reference,
                attempt.provider_transaction_id, attempt.amount_cop,
                attempt.currency, attempt.provider_status,
-               attempt.provider_status_updated_at, attempt.request_fingerprint_hash,
-               reservation.id AS reservation_id, reservation.state AS reservation_state,
-               reservation.expires_at AS reservation_expires_at,
-               reservation.product_id AS reservation_product_id,
-               reservation.quantity AS reservation_quantity,
-               checkout.state AS checkout_state
+               attempt.provider_status_updated_at, attempt.request_fingerprint_hash
         FROM payment_attempts AS attempt
-        JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
-        JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
-        WHERE attempt.id = $1
-        FOR UPDATE OF attempt, checkout, reservation
+        WHERE attempt.id = $1 AND attempt.checkout_id = $2
+        FOR UPDATE
       `,
-      [attemptId],
+      [attemptId, checkoutId],
     );
-    return result.rows[0] ?? null;
+    const lockedAttempt = attempt.rows[0];
+    if (!lockedAttempt) return null;
+
+    return {
+      ...lockedAttempt,
+      reservation_id: lockedReservation.id,
+      reservation_state: lockedReservation.state,
+      reservation_expires_at: lockedReservation.expires_at,
+      reservation_expired: lockedReservation.is_expired,
+      reservation_product_id: lockedReservation.product_id,
+      reservation_quantity: lockedReservation.quantity,
+      checkout_state: checkoutState,
+    };
   }
 
   private async extendRetryWindow(

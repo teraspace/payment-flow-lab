@@ -16,7 +16,7 @@ Neither guarantee makes PostgreSQL atomic with an external payment request. A SQ
 |---|---|---|
 | Checkout | `RESERVED`, `PAYMENT_PENDING`, `PAID`, `PAYMENT_FAILED`, `CANCEL_PENDING`, `CANCELLED`, `EXPIRED`, `FULFILLMENT_EXCEPTION` | `PAID` is reached only on confirmed approval. `CANCELLED`/`EXPIRED` close new payment attempts. A late approval after release becomes an exception, not a stock adjustment against another buyer. |
 | Reservation | `HELD`, `COMMITTED`, `RELEASED` | Exactly one transition from `HELD` to `COMMITTED` or `RELEASED`. |
-| Payment attempt | `CREATED`, `DISPATCHING`, `FAILED_LOCAL`, `PENDING`, `UNKNOWN_OUTCOME`, `APPROVED`, `DECLINED`, `ERROR`, `VOIDED` | `FAILED_LOCAL` is allowed only when the adapter proves it failed before sending the request. Repeated observations of an old state cannot downgrade a newer result. A contradictory later approval follows the late-approval path. A deliberate retry is a new resource with a new local key, provider reference, and card token. |
+| Payment attempt | `CREATED`, `DISPATCHING`, `FAILED_LOCAL`, `REJECTED_NO_TRANSACTION`, `PENDING`, `UNKNOWN_OUTCOME`, `APPROVED`, `DECLINED`, `ERROR`, `VOIDED` | `FAILED_LOCAL` means the adapter proves no request bytes were sent. `REJECTED_NO_TRANSACTION` records an explicit provider rejection before transaction creation. Neither consumes a provider charge retry. Repeated observations cannot downgrade a newer result; a newer contradiction after approval triggers manual review. A deliberate retry is a new resource with a new local key, provider reference, and card token. |
 | Fulfillment | `READY`, `FULFILLMENT_EXCEPTION`, `CANCELLED` | Create at most once after confirmed approval. Actual delivery/shipping integration is outside the challenge baseline unless required by the brief. |
 
 ```mermaid
@@ -25,6 +25,8 @@ stateDiagram-v2
     RESERVED --> PAYMENT_PENDING: provider says PENDING
     RESERVED --> UNKNOWN_OUTCOME: timeout after send may have begun
     RESERVED --> RESERVED: mark attempt FAILED_LOCAL when no request bytes were sent
+    RESERVED --> RESERVED: provider rejects request before transaction creation
+    PAYMENT_PENDING --> RESERVED: explicit provider rejection before transaction creation
     RESERVED --> EXPIRED: no payment attempt before hold expiry
     PAYMENT_PENDING --> PAID: confirmed APPROVED
     PAYMENT_PENDING --> PAYMENT_FAILED: confirmed DECLINED or ERROR
@@ -39,6 +41,8 @@ stateDiagram-v2
 ```
 
 The diagram is a review model, not executable state-machine code. I3 has no public cancellation command; a confirmed `VOIDED` result closes the checkout and releases its held stock.
+
+For mutations to an existing checkout, transactions acquire row locks in a consistent order: **checkout → reservation → payment attempt → product**. Expiry first discovers candidate IDs without locking, then locks the checkout and revalidates/locks its reservation before adjusting the product counter. This keeps expiry, payment events, reconciliation, and explicit payment commands from waiting on the same checkout/reservation rows in opposite orders.
 
 ## Recommended request and payment sequence
 
@@ -57,10 +61,11 @@ The selected synchronous dispatch keeps a short-lived card token and both consen
 |---|---|---|
 | Local validation fails before an attempt is created | Reject the command and retain useful validation state; do not create a provider transaction. | Existing hold stays until its normal expiry. The corrected request may be submitted once valid. |
 | Transport evidence proves no provider request bytes could have been sent | Close the attempt as `FAILED_LOCAL`, recording why it is known not to have reached the provider. | Permit a deliberate new attempt with a new key and fresh card token; this does not consume the proposed retry reserved for a provider-terminal failure. |
+| Provider explicitly rejects the create request with a documented `400`/`401` response before creating a transaction | Close the attempt as `REJECTED_NO_TRANSACTION` and retain the response code; do not report a card decline or consume the provider-terminal retry. | Keep the reservation through its existing deadline and permit a deliberate corrected request with a new key/token. |
 | The provider returns a confirmed terminal `DECLINED` or `ERROR` | Close that attempt as failed; preserve status and correlation evidence. | After the first provider-terminal failure, start a 10-minute window for one explicit retry with a fresh token, key, and reference. If that retry also fails, release the hold immediately. If unused, the retry window expiry releases the hold. |
 | The provider returns `PENDING` | Keep the attempt open and show a pending state. | Keep the hold; do not start another payment attempt. Poll the app's status endpoint and accept signed events. |
 | Network timeout/crash after sending may have begun | Mark `UNKNOWN_OUTCOME`; timeout is not decline. Preserve attempt/reference and reconcile by webhook or server-side status lookup when the provider transaction ID is known. A crashed `DISPATCHING` row is eligible for recovery after 20 seconds and becomes unknown on the next 30-second reconciliation pass. | Keep the hold and block another charge. Never automatically resend the same attempt. At the provisional 30-minute threshold, expose `manualReviewRequired`; do not automatically release or retry. |
-| Provider event/status confirms `APPROVED` | Commit reservation and create one fulfillment record in one local transaction. | No retry. A fulfillment failure is a fulfillment exception, never a reason to charge again. |
+| Provider event/status confirms `APPROVED` | Commit a still-valid hold and create one fulfillment record in one local transaction. A late approval after release or after the `PAYMENT_FAILED` retry deadline becomes `FULFILLMENT_EXCEPTION`; release any still-held expired stock first. Pending/unknown attempts retain their hold while reconciliation is open. | No retry. A fulfillment failure is a fulfillment exception, never a reason to charge again. |
 | Provider confirms `VOIDED` | Close the attempt and checkout as cancelled. I3 has no public cancellation command; this result may follow a provider-side operation or event. | Release the hold once. A canceled checkout cannot be retried; user starts a new checkout. |
 | Approval arrives after hold was released/reassigned | Persist the approval and raise `FULFILLMENT_EXCEPTION`; do not steal stock from another reservation. | Human/business decision: acquire stock without violating another hold or arrange compensation/refund. Refund is a separate provider operation, not an automatic consequence of timeout. |
 

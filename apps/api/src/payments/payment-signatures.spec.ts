@@ -86,6 +86,44 @@ describe('payment signatures', () => {
       'Missing signed payment event value.',
     );
   });
+
+  it('requires every payment-authorizing field to be covered by the provider checksum', () => {
+    const secret = 'event-secret-for-tests';
+    const requiredProperties = [
+      'transaction.id',
+      'transaction.reference',
+      'transaction.amount_in_cents',
+      'transaction.currency',
+      'transaction.status',
+    ];
+
+    for (const missingProperty of requiredProperties) {
+      const envelope = signedEvent(1_790_000_000, secret);
+      const signature = envelope.signature as { properties: string[]; checksum: string };
+      const transaction = (envelope.data as { transaction: Record<string, unknown> }).transaction;
+      signature.properties = signature.properties.filter(
+        (property) => property !== missingProperty,
+      );
+      const signedValues = signature.properties
+        .map((property) => String(transaction[property.slice('transaction.'.length)]))
+        .join('');
+      signature.checksum = createHash('sha256')
+        .update(`${signedValues}${String(envelope.timestamp)}${secret}`)
+        .digest('hex');
+
+      expect(() => verifyProviderEvent(envelope, secret, 'test')).toThrow(
+        'Required payment event fields are not all signed.',
+      );
+
+      const field = missingProperty.slice('transaction.'.length);
+      transaction[field] = typeof transaction[field] === 'number'
+        ? Number(transaction[field]) + 1
+        : `${String(transaction[field])}-tampered`;
+      expect(() => verifyProviderEvent(envelope, secret, 'test')).toThrow(
+        'Required payment event fields are not all signed.',
+      );
+    }
+  });
 });
 
 function signedEvent(

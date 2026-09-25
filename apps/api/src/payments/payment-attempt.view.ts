@@ -2,6 +2,7 @@ export type PaymentAttemptState =
   | 'CREATED'
   | 'DISPATCHING'
   | 'FAILED_LOCAL'
+  | 'REJECTED_NO_TRANSACTION'
   | 'PENDING'
   | 'UNKNOWN_OUTCOME'
   | 'APPROVED'

@@ -12,6 +12,13 @@ const STATUS_VALUES = new Set<ProviderTransactionStatus>([
   'ERROR',
 ]);
 const PROPERTY_PATH = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/;
+const REQUIRED_SIGNED_PROPERTIES = [
+  'transaction.id',
+  'transaction.reference',
+  'transaction.amount_in_cents',
+  'transaction.currency',
+  'transaction.status',
+] as const;
 
 export interface ProviderEventEnvelope {
   event?: unknown;
@@ -55,15 +62,22 @@ export function verifyProviderEvent(
   if (!isRecord(transaction) || !Array.isArray(signature.properties)) {
     throw new Error('Invalid payment event transaction or signature.');
   }
+  const signedProperties: unknown[] = signature.properties;
 
   const values: string[] = [];
-  for (const property of signature.properties) {
+  for (const property of signedProperties) {
     if (typeof property !== 'string' || !PROPERTY_PATH.test(property)) {
       throw new Error('Invalid payment event signature property.');
     }
     const value = propertyValue(envelope.data, property);
     if (value === null) throw new Error('Missing signed payment event value.');
     values.push(value);
+  }
+  if (new Set(signedProperties).size !== signedProperties.length) {
+    throw new Error('Duplicate payment event signature property.');
+  }
+  if (REQUIRED_SIGNED_PROPERTIES.some((property) => !signedProperties.includes(property))) {
+    throw new Error('Required payment event fields are not all signed.');
   }
 
   const checksum = signature.checksum;

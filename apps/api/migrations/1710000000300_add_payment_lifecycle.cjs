@@ -27,7 +27,7 @@ exports.up = (pgm) => {
       checkout_id uuid NOT NULL REFERENCES checkouts(id),
       attempt_number smallint NOT NULL CHECK (attempt_number BETWEEN 1 AND 10),
       state text NOT NULL CHECK (state IN (
-        'CREATED', 'DISPATCHING', 'FAILED_LOCAL', 'PENDING',
+        'CREATED', 'DISPATCHING', 'FAILED_LOCAL', 'REJECTED_NO_TRANSACTION', 'PENDING',
         'UNKNOWN_OUTCOME', 'APPROVED', 'DECLINED', 'ERROR', 'VOIDED'
       )),
       idempotency_key_hash char(64) NOT NULL
@@ -88,7 +88,8 @@ exports.up = (pgm) => {
       event_occurred_at timestamptz NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(),
       disposition text NOT NULL CHECK (disposition IN (
-        'APPLIED', 'DUPLICATE', 'UNMATCHED', 'MISMATCH', 'STALE', 'IGNORED'
+        'APPLIED', 'DUPLICATE', 'UNMATCHED', 'MISMATCH', 'STALE',
+        'CONTRADICTORY', 'IGNORED'
       ))
     );
 

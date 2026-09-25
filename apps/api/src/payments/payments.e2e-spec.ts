@@ -8,7 +8,10 @@ import { AppModule } from '../app.module';
 import { configureApplication } from '../configure-application';
 import { PaymentGateway, ProviderTransaction, ProviderTransactionStatus, PAYMENT_GATEWAY } from './payment-gateway.contract';
 import { PaymentsService } from './payments.service';
-import { PaymentGatewayConfigurationError } from './payment-gateway.errors';
+import {
+  PaymentGatewayConfigurationError,
+  PaymentGatewayRejectedError,
+} from './payment-gateway.errors';
 
 describe('payment lifecycle API (PostgreSQL)', () => {
   let app: INestApplication;
@@ -277,6 +280,48 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     expect(gateway.createTransaction).toHaveBeenCalledTimes(2);
   });
 
+  it.each([400, 401])(
+    'does not consume the provider retry allowance when the provider rejects HTTP %s before creating a transaction',
+    async (httpStatus) => {
+      const checkout = await createCheckout();
+      gateway.createTransaction.mockRejectedValueOnce(new PaymentGatewayRejectedError(httpStatus));
+
+      const rejected = await postPayment(checkout.id, `payment-rejected-${httpStatus}-key-001`).expect(201);
+      expect(rejected.body.state).toBe('REJECTED_NO_TRANSACTION');
+      expect(rejected.body).not.toHaveProperty('providerHttpStatus');
+
+      const state = await database.query<{
+        checkout_state: string;
+        reservation_state: string;
+        provider_http_status: number;
+        provider_status: string | null;
+        reserved_quantity: number;
+      }>(`
+        SELECT checkout.state AS checkout_state, reservation.state AS reservation_state,
+               attempt.provider_http_status, attempt.provider_status, product.reserved_quantity
+        FROM checkouts AS checkout
+        JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+        JOIN payment_attempts AS attempt ON attempt.checkout_id = checkout.id
+        JOIN products AS product ON product.id = reservation.product_id
+        WHERE checkout.id = $1
+      `, [checkout.id]);
+      expect(state.rows[0]).toEqual({
+        checkout_state: 'RESERVED',
+        reservation_state: 'HELD',
+        provider_http_status: httpStatus,
+        provider_status: null,
+        reserved_quantity: 1,
+      });
+
+      const retried = await postPayment(checkout.id, `payment-corrected-${httpStatus}-key-001`, {
+        ...paymentInput,
+        paymentToken: `fresh-token-after-http-${httpStatus}`,
+      }).expect(201);
+      expect(retried.body).toMatchObject({ attemptNumber: 2, state: 'PENDING' });
+      expect(gateway.createTransaction).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('allows one explicit retry after confirmed decline and blocks further payment attempts', async () => {
     const checkout = await createCheckout();
     nextCreateStatus = 'DECLINED';
@@ -394,6 +439,51 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     await expect(paymentsService.purgeExpiredEventReceipts()).resolves.toBe(2);
   });
 
+  it('flags a newer contradictory void after approval for manual review', async () => {
+    const checkout = await createCheckout();
+    const created = await postPayment(checkout.id, 'payment-contradictory-status-001').expect(201);
+    const transaction = transactions.get('provider-tx-1');
+    if (!transaction) throw new Error('Provider test transaction is missing.');
+    const approvedTimestamp = Math.floor(Date.now() / 1000) + 2;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent({ ...transaction, status: 'APPROVED' }, approvedTimestamp, eventSecret))
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent({ ...transaction, status: 'VOIDED' }, approvedTimestamp + 1, eventSecret))
+      .expect(200);
+
+    const status = await request(app.getHttpServer())
+      .get(`/api/v1/checkouts/${checkout.id}/payment-attempts/${created.body.attemptId}`)
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(status.body).toMatchObject({ state: 'APPROVED', manualReviewRequired: true });
+
+    const persisted = await database.query<{
+      checkout_state: string;
+      reservation_state: string;
+      fulfillment_state: string;
+      disposition: string;
+    }>(`
+      SELECT checkout.state AS checkout_state, reservation.state AS reservation_state,
+             fulfillment.state AS fulfillment_state, receipt.disposition
+      FROM checkouts AS checkout
+      JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+      JOIN fulfillments AS fulfillment ON fulfillment.checkout_id = checkout.id
+      JOIN payment_event_receipts AS receipt ON receipt.payment_attempt_id = $2
+       AND receipt.provider_status = 'VOIDED'
+      WHERE checkout.id = $1
+    `, [checkout.id, created.body.attemptId]);
+    expect(persisted.rows[0]).toEqual({
+      checkout_state: 'PAID',
+      reservation_state: 'COMMITTED',
+      fulfillment_state: 'READY',
+      disposition: 'CONTRADICTORY',
+    });
+  });
+
   it('escalates an old unknown without releasing its hold', async () => {
     const checkout = await createCheckout();
     gateway.createTransaction.mockRejectedValueOnce(new Error('simulated timeout'));
@@ -438,7 +528,6 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       `UPDATE reservations SET expires_at = now() - interval '1 second' WHERE checkout_id = $1`,
       [checkout.id],
     );
-    await request(app.getHttpServer()).get('/api/v1/products').expect(200);
     const providerTransaction = transactions.get('provider-tx-1');
     if (!providerTransaction) throw new Error('Provider test transaction is missing.');
     const lateApproval = signedEvent(
@@ -467,6 +556,55 @@ describe('payment lifecycle API (PostgreSQL)', () => {
       JOIN fulfillments AS fulfillment ON fulfillment.checkout_id = checkout.id
       WHERE checkout.id = $1
     `, [checkout.id]);
+    expect(state.rows[0]).toEqual({
+      checkout_state: 'FULFILLMENT_EXCEPTION',
+      reservation_state: 'RELEASED',
+      physical_quantity: 7,
+      reserved_quantity: 0,
+      fulfillment_state: 'FULFILLMENT_EXCEPTION',
+    });
+  });
+
+  it('serializes expiry and a late approval without losing inventory consistency', async () => {
+    const checkout = await createCheckout();
+    nextCreateStatus = 'DECLINED';
+    await postPayment(checkout.id, 'payment-expiry-race-000001').expect(201);
+    const transaction = transactions.get('provider-tx-1');
+    if (!transaction) throw new Error('Provider test transaction is missing.');
+
+    await database.query(
+      `UPDATE reservations SET expires_at = now() - interval '1 second' WHERE checkout_id = $1`,
+      [checkout.id],
+    );
+    const lateApproval = signedEvent(
+      { ...transaction, status: 'APPROVED' },
+      Math.floor(Date.now() / 1000) + 2,
+      eventSecret,
+    );
+
+    const [catalog, event] = await Promise.all([
+      request(app.getHttpServer()).get('/api/v1/products'),
+      request(app.getHttpServer()).post('/api/v1/webhooks/payment-events').send(lateApproval),
+    ]);
+    expect(catalog.status).toBe(200);
+    expect(event.status).toBe(200);
+
+    const state = await database.query<{
+      checkout_state: string;
+      reservation_state: string;
+      physical_quantity: number;
+      reserved_quantity: number;
+      fulfillment_state: string | null;
+    }>(`
+      SELECT checkout.state AS checkout_state, reservation.state AS reservation_state,
+             product.physical_quantity, product.reserved_quantity, fulfillment.state AS fulfillment_state
+      FROM checkouts AS checkout
+      JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+      JOIN products AS product ON product.id = reservation.product_id
+      LEFT JOIN fulfillments AS fulfillment ON fulfillment.checkout_id = checkout.id
+      WHERE checkout.id = $1
+    `, [checkout.id]);
+
     expect(state.rows[0]).toEqual({
       checkout_state: 'FULFILLMENT_EXCEPTION',
       reservation_state: 'RELEASED',
