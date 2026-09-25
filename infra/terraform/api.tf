@@ -70,6 +70,22 @@ resource "aws_iam_role_policy" "database_secret" {
   })
 }
 
+resource "aws_iam_role_policy" "payment_gateway_secret" {
+  count = var.payment_gateway_secret_arn == "" ? 0 : 1
+
+  name = "${local.resource_prefix}-payment-gateway-test-secret"
+  role = aws_iam_role.task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.payment_gateway_secret_arn
+    }]
+  })
+}
+
 resource "aws_ecs_task_definition" "api" {
   family                   = "${local.resource_prefix}-api"
   requires_compatibilities = ["FARGATE"]
@@ -144,7 +160,7 @@ resource "aws_ecs_task_definition" "migration" {
       { name = "DATABASE_SSL", value = "true" },
       { name = "DATABASE_SSL_CA_FILE", value = "/etc/ssl/certs/aws-rds-global-bundle.pem" },
     ]
-    secrets = local.api_secrets
+    secrets = local.database_secrets
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -244,6 +260,7 @@ resource "aws_ecs_service" "api" {
   depends_on = [
     aws_iam_role_policy_attachment.task_execution,
     aws_iam_role_policy.database_secret,
+    aws_iam_role_policy.payment_gateway_secret,
     aws_lb_listener.api,
     aws_cloudfront_distribution.app,
   ]
