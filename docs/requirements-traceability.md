@@ -67,7 +67,7 @@ I3 verifies these contract details with unit tests and a deterministic provider 
 - Public smoke checks returned HTTP 200 for `/`, `/api/v1/health/live`, `/api/v1/health/ready`, `/api/v1/products`, and `/api/v1/docs`. A synthetic checkout returned `201`, an idempotent replay returned `200`, and checkout recovery returned `200` with the approved COP 42,000 total. The synthetic row was removed and the catalog returned to 7 available / 0 reserved notebook units.
 - Cost Explorer access is disabled for this account, so this turn could not verify actual charges or remaining credits. The Terraform README retains the estimated baseline, excluding variable usage. No final rubric score is awarded by this evidence alone; the customer-facing React checkout and live payment flow remain future work.
 
-## I3 payment lifecycle implementation evidence (awaiting iteration validation)
+## I3 payment lifecycle implementation evidence (user validated; deployment underway)
 
 - The API persists idempotent payment attempts before dispatch, performs the provider call outside SQL transactions, and never sends a second create request when the same attempt is replayed.
 - A confirmed decline/error opens one explicit 10-minute retry window. Pending and unknown outcomes keep their reservation; unknown outcomes block another attempt. A reconciliation loop queries known provider transaction IDs without holding database locks across network calls and flags old unresolved attempts for review.
@@ -75,4 +75,5 @@ I3 verifies these contract details with unit tests and a deterministic provider 
 - A late approval after reservation release or after a `PAYMENT_FAILED` retry deadline is recorded as `FULFILLMENT_EXCEPTION`; any still-held expired quantity is released first, and inventory is not decremented from stock that may have been reassigned. Expiry/payment transitions use the same checkout → reservation → attempt → product lock order.
 - Internal whole-COP prices are converted to provider centavos only at the adapter boundary. Raw card and consent tokens are not persisted or logged; the request fingerprint is cleared by the 30-day checkout retention job.
 - Controlled PostgreSQL integration evidence: 41 Jest tests passed across five suites; migrations applied and rolled back; lint, typecheck, full app build, zero-moderate vulnerability audit, Terraform format/validate, and `git diff --check` passed. Hosted `quality`, `database-migrations`, and `infrastructure` checks passed on PR #10 at `a0ce0c7`.
-- No sandbox credentials were used and no real payment was created. Manual review threshold (30 minutes) and minimal receipt retention (365 days) are configurable defaults awaiting user validation; no cancellation UI, refund path, or admin UI is included in I3.
+- No sandbox credentials were used and no real payment was created. No cancellation UI, refund path, or admin UI is included in I3.
+- The user approved the 30-minute unresolved-payment review threshold and 365-day minimal receipt retention for the challenge demo on 2026-09-24. These remain configurable demo policies, not provider requirements.
