@@ -66,13 +66,13 @@ h1, h2, h3 { color: var(--ink); font-family: 'Avenir Next', 'Segoe UI', sans-ser
 .intro-decoration-line { position: absolute; right: 10px; bottom: 29px; width: 62px; height: 1px; background: #9ebca8; transform: rotate(-45deg); }
 
 .progress-nav { position: relative; margin: 2px 0 32px; }
-.progress-nav ol { position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.progress-step { display: flex; min-width: 100px; align-items: center; gap: 9px; color: #52645b; font-size: .82rem; font-weight: 650; }
-.progress-step:last-child { justify-content: flex-end; }
+.progress-nav ol { position: relative; z-index: 1; display: flex; align-items: flex-start; margin: 0; padding: 0; list-style: none; }
+.progress-step { display: flex; width: 20%; min-width: 0; flex-direction: column; align-items: center; gap: 7px; padding: 0 6px; color: #52645b; font-size: .82rem; font-weight: 650; line-height: 1.2; text-align: center; }
+.progress-step:last-child { justify-content: flex-start; }
 .progress-number { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid #d5ded7; border-radius: 50%; background: #f5f5ef; color: #52645b; font-size: .78rem; }
 .progress-step--current { color: var(--green); }
 .progress-step--current .progress-number, .progress-step--complete .progress-number { border-color: var(--green); background: var(--green); color: white; }
-.progress-line { position: absolute; z-index: 0; top: 14px; right: 12%; left: 12%; height: 2px; background: #dce5de; }
+.progress-line { position: absolute; z-index: 0; top: 14px; right: 10%; left: 10%; height: 2px; background: #dce5de; }
 .progress-line span { display: block; height: 100%; background: #3b8a68; transition: width .25s ease; }
 
 .catalog-section { padding: 18px 0 40px; }
@@ -300,11 +300,9 @@ button:focus:not(:focus-visible), a:focus:not(:focus-visible) { outline: none; }
   .page-description { max-width: 470px; font-size: .88rem; }
   .intro-decoration { position: absolute; right: -64px; bottom: 12px; z-index: -1; opacity: .45; }
   .progress-nav { margin-bottom: 20px; }
-  .progress-nav ol { align-items: flex-start; gap: 0; }
-  .progress-step { width: 20%; min-width: 0; flex-direction: column; gap: 5px; font-size: .59rem; line-height: 1.15; text-align: center; }
-  .progress-step:last-child { justify-content: flex-start; }
+  .progress-step { gap: 5px; padding: 0 2px; font-size: .59rem; line-height: 1.15; }
   .progress-number { width: 27px; height: 27px; font-size: .7rem; }
-  .progress-line { top: 13px; right: 10%; left: 10%; }
+  .progress-line { top: 13px; }
   .section-heading { display: block; margin-bottom: 17px; }
   .section-note { margin-top: 8px; font-size: .74rem; }
   .catalog-section { padding-top: 12px; }
