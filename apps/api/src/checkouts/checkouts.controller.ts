@@ -29,6 +29,7 @@ import {
 } from '../guest-sessions/guest-sessions.service';
 import { CheckoutsService, CheckoutView } from './checkouts.service';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
+import { unwrapUseCaseResult } from '../http/use-case-result';
 
 class CheckoutCustomerResponse {
   @ApiProperty({ type: String, nullable: true })
@@ -159,7 +160,9 @@ export class CheckoutsController {
     const sessionId = await this.sessions.requireSessionId(
       request.cookies?.[GUEST_SESSION_COOKIE],
     );
-    const result = await this.checkouts.create(sessionId, idempotencyKey, dto);
+    const result = unwrapUseCaseResult(
+      await this.checkouts.create(sessionId, idempotencyKey, dto),
+    );
     response.status(result.replayed ? 200 : 201);
     return result.checkout;
   }

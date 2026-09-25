@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   BadRequestException,
-  ConflictException,
   GoneException,
   Injectable,
   InternalServerErrorException,
@@ -13,6 +12,8 @@ import { PoolClient, QueryResultRow } from 'pg';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { DatabaseService } from '../database/database.service';
 import { ReservationExpirationService } from '../inventory/reservation-expiration.service';
+import { andThen, andThenAsync, err, ok, Result } from '../core/result';
+import { UseCaseError, useCaseError } from '../core/use-case-error';
 
 const CREATE_CHECKOUT_OPERATION = 'CREATE_CHECKOUT';
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{16,128}$/;
@@ -118,22 +119,23 @@ export class CheckoutsService {
     sessionId: string,
     idempotencyKey: string | undefined,
     dto: CreateCheckoutDto,
-  ): Promise<CreateCheckoutResult> {
-    if (!idempotencyKey || !IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
-      throw new BadRequestException(
-        'Idempotency-Key must contain 16 to 128 permitted characters.',
-      );
-    }
+  ): Promise<Result<CreateCheckoutResult, UseCaseError>> {
+    const validKey = this.validateIdempotencyKey(idempotencyKey);
+    const preparedInput = andThen(validKey, (validIdempotencyKey) => {
+      const input = this.canonicalize(dto);
+      return ok({
+        input,
+        idempotencyKeyHash: this.hash(validIdempotencyKey),
+        fingerprintHash: this.hash(JSON.stringify(input)),
+      });
+    });
 
-    const input = this.canonicalize(dto);
-    const idempotencyKeyHash = this.hash(idempotencyKey);
-    const fingerprintHash = this.hash(JSON.stringify(input));
-
-    return this.database.transaction(async (client) => {
-      await this.reservationExpiration.releaseExpired(client);
-      const checkoutId = randomUUID();
-      const claimed = await client.query<{ id: string }>(
-        `
+    return andThenAsync(preparedInput, async ({ input, idempotencyKeyHash, fingerprintHash }) => {
+      return this.database.transactionResult<CreateCheckoutResult, UseCaseError>(async (client) => {
+        await this.reservationExpiration.releaseExpired(client);
+        const checkoutId = randomUUID();
+        const claimed = await client.query<{ id: string }>(
+          `
           INSERT INTO idempotency_records (
             guest_session_id, operation, idempotency_key_hash,
             fingerprint_hash, checkout_id
@@ -143,18 +145,12 @@ export class CheckoutsService {
           DO NOTHING
           RETURNING id
         `,
-        [
-          sessionId,
-          CREATE_CHECKOUT_OPERATION,
-          idempotencyKeyHash,
-          fingerprintHash,
-          checkoutId,
-        ],
-      );
+          [sessionId, CREATE_CHECKOUT_OPERATION, idempotencyKeyHash, fingerprintHash, checkoutId],
+        );
 
-      if (claimed.rowCount === 0) {
-        const existing = await client.query<ExistingIdempotencyRow>(
-          `
+        if (claimed.rowCount === 0) {
+          const existing = await client.query<ExistingIdempotencyRow>(
+            `
             SELECT fingerprint_hash, checkout_id
             FROM idempotency_records
             WHERE guest_session_id = $1
@@ -162,83 +158,94 @@ export class CheckoutsService {
               AND idempotency_key_hash = $3
             FOR UPDATE
           `,
-          [sessionId, CREATE_CHECKOUT_OPERATION, idempotencyKeyHash],
+            [sessionId, CREATE_CHECKOUT_OPERATION, idempotencyKeyHash],
+          );
+          const record = existing.rows[0];
+
+          if (!record) {
+            throw new InternalServerErrorException(
+              'The idempotency record could not be recovered.',
+            );
+          }
+          if (record.fingerprint_hash === null) {
+            return err(
+              useCaseError(
+                'IDEMPOTENCY_REPLAY_EXPIRED',
+                'This checkout replay window has expired. Start a new guest session.',
+              ),
+            );
+          }
+          if (record.fingerprint_hash.trim() !== fingerprintHash) {
+            return err(
+              useCaseError(
+                'IDEMPOTENCY_PAYLOAD_CONFLICT',
+                'Idempotency-Key was already used with a different checkout request.',
+              ),
+            );
+          }
+
+          return ok({
+            checkout: await this.loadCheckout(client, sessionId, record.checkout_id),
+            replayed: true,
+          });
+        }
+
+        const baseFeeMinor = this.config.getOrThrow<number>('CHECKOUT_BASE_FEE_MINOR');
+        const deliveryFeeMinor = this.config.getOrThrow<number>('CHECKOUT_DELIVERY_FEE_MINOR');
+        const reservationTtlSeconds = this.config.getOrThrow<number>(
+          'CHECKOUT_RESERVATION_TTL_SECONDS',
         );
-        const record = existing.rows[0];
+        const reservation = await this.reserveProduct(client, input.productId, input.quantity);
+        if (!reservation.ok) return reservation;
 
-        if (!record) {
-          throw new InternalServerErrorException(
-            'The idempotency record could not be recovered.',
+        const product = reservation.value;
+        const unitPriceMinor = BigInt(product.price_minor);
+        const subtotalMinor = unitPriceMinor * BigInt(input.quantity);
+        const totalMinor = subtotalMinor + BigInt(baseFeeMinor) + BigInt(deliveryFeeMinor);
+
+        if (
+          subtotalMinor < 0n ||
+          subtotalMinor > MAX_SAFE_MINOR_UNITS ||
+          totalMinor < 0n ||
+          totalMinor > MAX_SAFE_MINOR_UNITS
+        ) {
+          return err(
+            useCaseError(
+              'CHECKOUT_AMOUNT_OUT_OF_RANGE',
+              'Checkout total exceeds the supported integer range.',
+            ),
           );
         }
-        if (record.fingerprint_hash === null) {
-          throw new GoneException(
-            'This checkout replay window has expired. Start a new guest session.',
-          );
-        }
-        if (record.fingerprint_hash.trim() !== fingerprintHash) {
-          throw new ConflictException(
-            'Idempotency-Key was already used with a different checkout request.',
-          );
-        }
 
-        return {
-          checkout: await this.loadCheckout(client, sessionId, record.checkout_id),
-          replayed: true,
-        };
-      }
-
-      const baseFeeMinor = this.config.getOrThrow<number>(
-        'CHECKOUT_BASE_FEE_MINOR',
-      );
-      const deliveryFeeMinor = this.config.getOrThrow<number>(
-        'CHECKOUT_DELIVERY_FEE_MINOR',
-      );
-      const reservationTtlSeconds = this.config.getOrThrow<number>(
-        'CHECKOUT_RESERVATION_TTL_SECONDS',
-      );
-      const product = await this.reserveProduct(
-        client,
-        input.productId,
-        input.quantity,
-      );
-      const unitPriceMinor = BigInt(product.price_minor);
-      const subtotalMinor = unitPriceMinor * BigInt(input.quantity);
-      const totalMinor =
-        subtotalMinor + BigInt(baseFeeMinor) + BigInt(deliveryFeeMinor);
-
-      this.ensureSafeAmount(subtotalMinor);
-      this.ensureSafeAmount(totalMinor);
-
-      const customer = await client.query<{ id: string }>(
-        `
+        const customer = await client.query<{ id: string }>(
+          `
           INSERT INTO customers (full_name, email)
           VALUES ($1, $2)
           RETURNING id
         `,
-        [input.customer.fullName, input.customer.email],
-      );
-      const customerId = customer.rows[0]?.id;
-      if (!customerId) {
-        throw new InternalServerErrorException('Customer snapshot was not created.');
-      }
-      const delivery = await client.query<{ id: string }>(
-        `
+          [input.customer.fullName, input.customer.email],
+        );
+        const customerId = customer.rows[0]?.id;
+        if (!customerId) {
+          throw new InternalServerErrorException('Customer snapshot was not created.');
+        }
+        const delivery = await client.query<{ id: string }>(
+          `
           INSERT INTO deliveries (recipient, address)
           VALUES ($1, $2)
           RETURNING id
         `,
-        [input.delivery.recipient, input.delivery.address],
-      );
-      const deliveryId = delivery.rows[0]?.id;
-      if (!deliveryId) {
-        throw new InternalServerErrorException('Delivery snapshot was not created.');
-      }
-      const checkout = await client.query<{
-        id: string;
-        reservation_expires_at: Date;
-      }>(
-        `
+          [input.delivery.recipient, input.delivery.address],
+        );
+        const deliveryId = delivery.rows[0]?.id;
+        if (!deliveryId) {
+          throw new InternalServerErrorException('Delivery snapshot was not created.');
+        }
+        const checkout = await client.query<{
+          id: string;
+          reservation_expires_at: Date;
+        }>(
+          `
           INSERT INTO checkouts (
             id, guest_session_id, customer_id, delivery_id, state,
             subtotal_minor, base_fee_minor, delivery_fee_minor, total_minor,
@@ -250,56 +257,57 @@ export class CheckoutsService {
           )
           RETURNING id, reservation_expires_at
         `,
-        [
-          checkoutId,
-          sessionId,
-          customerId,
-          deliveryId,
-          subtotalMinor.toString(),
-          baseFeeMinor,
-          deliveryFeeMinor,
-          totalMinor.toString(),
-          product.currency,
-          reservationTtlSeconds,
-        ],
-      );
-      const reservationExpiresAt = checkout.rows[0]?.reservation_expires_at;
-      if (!reservationExpiresAt) {
-        throw new InternalServerErrorException('Checkout reservation was not created.');
-      }
+          [
+            checkoutId,
+            sessionId,
+            customerId,
+            deliveryId,
+            subtotalMinor.toString(),
+            baseFeeMinor,
+            deliveryFeeMinor,
+            totalMinor.toString(),
+            product.currency,
+            reservationTtlSeconds,
+          ],
+        );
+        const reservationExpiresAt = checkout.rows[0]?.reservation_expires_at;
+        if (!reservationExpiresAt) {
+          throw new InternalServerErrorException('Checkout reservation was not created.');
+        }
 
-      await client.query(
-        `
+        await client.query(
+          `
           INSERT INTO checkout_items (
             checkout_id, product_id, sku_snapshot, name_snapshot,
             quantity, unit_price_minor, line_total_minor
           )
           VALUES ($1, $2, $3, $4, $5, $6, $7)
         `,
-        [
-          checkoutId,
-          product.id,
-          product.sku,
-          product.name,
-          input.quantity,
-          unitPriceMinor.toString(),
-          subtotalMinor.toString(),
-        ],
-      );
-      await client.query(
-        `
+          [
+            checkoutId,
+            product.id,
+            product.sku,
+            product.name,
+            input.quantity,
+            unitPriceMinor.toString(),
+            subtotalMinor.toString(),
+          ],
+        );
+        await client.query(
+          `
           INSERT INTO reservations (
             checkout_id, product_id, quantity, state, expires_at
           )
           VALUES ($1, $2, $3, 'HELD', $4)
         `,
-        [checkoutId, product.id, input.quantity, reservationExpiresAt],
-      );
+          [checkoutId, product.id, input.quantity, reservationExpiresAt],
+        );
 
-      return {
-        checkout: await this.loadCheckout(client, sessionId, checkoutId),
-        replayed: false,
-      };
+        return ok({
+          checkout: await this.loadCheckout(client, sessionId, checkoutId),
+          replayed: false,
+        });
+      });
     });
   }
 
@@ -347,7 +355,7 @@ export class CheckoutsService {
     client: PoolClient,
     productId: string,
     quantity: number,
-  ): Promise<ProductReservationRow> {
+  ): Promise<Result<ProductReservationRow, UseCaseError>> {
     const updated = await client.query<ProductReservationRow>(
       `
         UPDATE products
@@ -361,14 +369,28 @@ export class CheckoutsService {
       [productId, quantity],
     );
     const product = updated.rows[0];
-    if (product) return product;
+    if (product) return ok(product);
 
     const exists = await client.query<{ active: boolean }>(
       'SELECT active FROM products WHERE id = $1',
       [productId],
     );
-    if (!exists.rows[0]?.active) throw new NotFoundException('Product not found.');
-    throw new ConflictException('Not enough product units are available.');
+    if (!exists.rows[0]?.active) {
+      return err(useCaseError('PRODUCT_NOT_FOUND', 'Product not found.'));
+    }
+    return err(useCaseError('INSUFFICIENT_INVENTORY', 'Not enough product units are available.'));
+  }
+
+  private validateIdempotencyKey(idempotencyKey: string | undefined): Result<string, UseCaseError> {
+    if (!idempotencyKey || !IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+      return err(
+        useCaseError(
+          'INVALID_IDEMPOTENCY_KEY',
+          'Idempotency-Key must contain 16 to 128 permitted characters.',
+        ),
+      );
+    }
+    return ok(idempotencyKey);
   }
 
   private async loadCheckout(

@@ -32,6 +32,7 @@ import { CreatePaymentAttemptDto } from './dto/create-payment-attempt.dto';
 import { PaymentAttemptView } from './payment-attempt.view';
 import { PaymentsService } from './payments.service';
 import { TokenizeSandboxCardDto } from './dto/tokenize-sandbox-card.dto';
+import { unwrapUseCaseResult } from '../http/use-case-result';
 
 class PaymentAttemptResponse implements PaymentAttemptView {
   @ApiProperty({ format: 'uuid' })
@@ -159,11 +160,13 @@ export class PaymentsController {
     const sessionId = await this.sessions.requireSessionId(
       request.cookies?.[GUEST_SESSION_COOKIE],
     );
-    const result = await this.payments.createAttempt(
-      sessionId,
-      checkoutId,
-      idempotencyKey,
-      dto,
+    const result = unwrapUseCaseResult(
+      await this.payments.createAttempt(
+        sessionId,
+        checkoutId,
+        idempotencyKey,
+        dto,
+      ),
     );
     response.status(result.replayed ? 200 : 201);
     return result.attempt;
