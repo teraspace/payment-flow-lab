@@ -51,6 +51,7 @@ locals {
 
   api_environment = [
     { name = "API_PORT", value = "3000" },
+    { name = "PAYMENT_GATEWAY_ENVIRONMENT", value = "test" },
     { name = "WEB_ORIGIN", value = "https://${aws_cloudfront_distribution.app.domain_name}" },
     { name = "DATABASE_HOST", value = aws_db_instance.postgres.address },
     { name = "DATABASE_PORT", value = tostring(aws_db_instance.postgres.port) },
@@ -65,9 +66,26 @@ locals {
     aws_db_instance.postgres.master_user_secret[0].secret_arn,
   )
 
-  api_secrets = [
+  database_secrets = [
     { name = "DATABASE_PASSWORD", valueFrom = local.database_password_secret },
   ]
+
+  payment_gateway_secret_names = [
+    "PAYMENT_GATEWAY_BASE_URL",
+    "PAYMENT_GATEWAY_PUBLIC_KEY",
+    "PAYMENT_GATEWAY_PRIVATE_KEY",
+    "PAYMENT_GATEWAY_INTEGRITY_SECRET",
+    "PAYMENT_GATEWAY_EVENTS_SECRET",
+  ]
+
+  payment_gateway_secrets = var.payment_gateway_secret_arn == "" ? [] : [
+    for name in local.payment_gateway_secret_names : {
+      name      = name
+      valueFrom = "${var.payment_gateway_secret_arn}:${name}::"
+    }
+  ]
+
+  api_secrets = concat(local.database_secrets, local.payment_gateway_secrets)
 }
 
 variable "aws_region" {
@@ -92,6 +110,20 @@ variable "api_image_tag" {
   description = "Immutable ECR tag to deploy. Use the short Git commit SHA after publishing the image."
   type        = string
   default     = "i1-bootstrap"
+}
+
+variable "payment_gateway_secret_arn" {
+  description = "Optional ARN of a same-region Secrets Manager JSON secret containing the test-only payment gateway environment keys."
+  type        = string
+  default     = ""
+
+  validation {
+    condition = var.payment_gateway_secret_arn == "" || can(regex(
+      "^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$",
+      var.payment_gateway_secret_arn,
+    ))
+    error_message = "payment_gateway_secret_arn must be a valid Secrets Manager ARN, or empty to disable provider integration."
+  }
 }
 
 variable "migration_image_tag" {

@@ -1,6 +1,6 @@
-# AWS deployment preview
+# AWS deployment and update runbook
 
-This stack deploys only the I1 foundation shell: a static React app, API health/docs, and PostgreSQL. It does not implement or expose checkout or payment processing.
+This stack hosts a static React app, a NestJS API, and PostgreSQL. Checkout and payment routes are available in the application; provider-backed sandbox payments stay unavailable until `payment_gateway_secret_arn` references a configured test-only secret in AWS Secrets Manager.
 
 ## Architecture and exposure
 
@@ -56,10 +56,16 @@ Indicative on-demand baseline for a 730-hour month in `sa-east-1`, with one ARM6
 | RDS 20 GB gp3 | $4.38 |
 | Internal ALB hourly charge and light LCU use | $25.60 |
 | Fargate task public IPv4 | $3.65 |
-| Secrets Manager | $0.40 |
-| **Baseline before variable usage** | **about $71.25/month** |
+| Secrets Manager (database secret; optional sandbox secret adds about $0.40) | $0.40–$0.80 |
+| **Baseline before variable usage** | **about $71.25–$71.65/month** |
 
 S3 storage, ECR image storage, CloudWatch log ingestion, CloudFront requests/data transfer, taxes, and any additional usage are variable and not included. Budget approximately **$75–$90/month** at low traffic, then confirm actual usage in Billing. The zero-task bootstrap stage still incurs RDS, ALB, CloudFront, and storage charges. The database and load balancer continue billing until destroyed.
+
+### Sandbox provider credentials
+
+To enable provider calls from ECS, create a same-region AWS Secrets Manager secret whose `SecretString` is a JSON object with these exact keys: `PAYMENT_GATEWAY_BASE_URL`, `PAYMENT_GATEWAY_PUBLIC_KEY`, `PAYMENT_GATEWAY_PRIVATE_KEY`, `PAYMENT_GATEWAY_INTEGRITY_SECRET`, and `PAYMENT_GATEWAY_EVENTS_SECRET`. Use test-only values and the AWS-managed Secrets Manager encryption key. Do not place the values in Terraform variables, state, repository files, or CI logs. Pass only the secret ARN to Terraform as `payment_gateway_secret_arn`; the API task definition selects the JSON keys, and its execution role receives `secretsmanager:GetSecretValue` scoped to that ARN. The API environment is explicitly fixed to `test`, and application validation rejects production provider configuration.
+
+If `payment_gateway_secret_arn` is empty, the infrastructure remains deployable but provider metadata, tokenization, transaction, and webhook operations will be unavailable. The I4 checkout UI and API will still deploy, but payment completion will not work until the test secret exists and the API task is rolled out with its ARN.
 
 Rates change. Recheck [Fargate pricing](https://aws.amazon.com/fargate/pricing/), [RDS for PostgreSQL pricing](https://aws.amazon.com/rds/postgresql/pricing/), [Elastic Load Balancing pricing](https://aws.amazon.com/elasticloadbalancing/pricing/), and [VPC public IPv4 pricing](https://aws.amazon.com/vpc/pricing/) before applying. AWS's Free account plan ends after six months or when credits are depleted, whichever happens first; check the account's current credit balance and service eligibility rather than treating “Free Tier” as a blanket waiver.
 
@@ -128,11 +134,14 @@ Only after the migration succeeds, review the service rollout plan with both ima
 ../../scripts/terraform-aws.sh plan \
   -var='api_image_tag=iN-<commit>' \
   -var='migration_image_tag=iN-<commit>' \
+  -var='payment_gateway_secret_arn=<same-region-secret-arn>' \
   -out=tfplan-api
 ../../scripts/terraform-aws.sh show tfplan-api
 ```
 
 That plan updates the API task definition and ECS service; apply it only after review. The migration variable defaults to `api_image_tag`, preserving the single-tag behavior for existing deployments that do not set it explicitly.
+
+For an iteration without database migrations, build and push the immutable API image, then include `payment_gateway_secret_arn` in the reviewed API plan. The value is an ARN only; Terraform does not receive the secret contents.
 
 The I3 rollout plan also showed generated S3 web-asset differences because the ignored local `apps/web/dist` did not match the deployed bundle. Those web objects were outside I3 and were not applied. If a future API-only rollout plan contains unrelated web or infrastructure actions, stop and review the drift separately; do not include it in the API release. I3 used narrowly targeted migration/API ECS plans for that exceptional case. This is not the default Terraform workflow.
 
