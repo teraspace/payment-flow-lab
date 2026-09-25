@@ -21,6 +21,10 @@ These are related, but they are not the same guarantee.
 
 **External payment effects** cannot be committed atomically with PostgreSQL. Keep provider calls outside SQL transactions. A transaction, unique reference, or outbox does not guarantee exactly-once delivery to a remote provider.
 
+## Railway-oriented use-case results
+
+The checkout-creation and payment-attempt-creation use cases represent expected business outcomes with `Result<Success, UseCaseError>`. `andThen`/`andThenAsync` continue only on `Ok`; `Err` short-circuits the remaining use-case flow. The database transaction adapter commits `Ok` and rolls back `Err`, including inventory changes made earlier in that same transaction. Nest controllers translate typed use-case errors to HTTP exceptions at the delivery boundary. Unexpected SQL or infrastructure faults remain thrown exceptions and also roll back. Provider calls stay outside the transaction and retain the existing unknown-outcome/reconciliation policy.
+
 ## Inventory and checkout invariants
 
 1. `0 <= reserved_quantity <= physical_quantity`; available stock is physical minus reserved.
