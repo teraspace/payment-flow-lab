@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
-import { ReservationExpirationService } from './reservation-expiration.service';
+import { PostgresReservationExpirationAdapter } from './postgres-reservation-expiration.adapter';
 
 @Module({
   imports: [DatabaseModule],
-  providers: [ReservationExpirationService],
-  exports: [ReservationExpirationService],
+  providers: [PostgresReservationExpirationAdapter],
+  exports: [PostgresReservationExpirationAdapter],
 })
 export class InventoryModule {}

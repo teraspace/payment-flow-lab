@@ -9,7 +9,7 @@ interface ExpiredReservationRow {
 }
 
 @Injectable()
-export class ReservationExpirationService {
+export class PostgresReservationExpirationAdapter {
   async releaseExpired(client: PoolClient): Promise<number> {
     const expired = await client.query<ExpiredReservationRow>(`
       SELECT r.id, r.checkout_id, r.product_id, r.quantity

@@ -1,23 +1,5 @@
-import {
-  Injectable,
-  InternalServerErrorException,
-  NotFoundException,
-} from '@nestjs/common';
-import { QueryResultRow } from 'pg';
-import { DatabaseService } from '../database/database.service';
-import { ReservationExpirationService } from '../inventory/reservation-expiration.service';
-
-interface ProductRow extends QueryResultRow {
-  id: string;
-  sku: string;
-  name: string;
-  description: string;
-  image_url: string;
-  price_minor: string;
-  currency: string;
-  physical_quantity: number;
-  reserved_quantity: number;
-}
+import { Inject, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { PRODUCT_CATALOG, ProductCatalogPort, ProductRecord } from './product-catalog.port';
 
 export interface ProductView {
   id: string;
@@ -34,64 +16,28 @@ export interface ProductView {
 
 @Injectable()
 export class ProductsService {
-  constructor(
-    private readonly database: DatabaseService,
-    private readonly reservationExpiration: ReservationExpirationService,
-  ) {}
+  constructor(@Inject(PRODUCT_CATALOG) private readonly catalog: ProductCatalogPort) {}
 
   async list(): Promise<ProductView[]> {
-    return this.database.transaction(async (client) => {
-      await this.reservationExpiration.releaseExpired(client);
-      const result = await client.query<ProductRow>(`
-        SELECT id, sku, name, description, image_url, price_minor, currency,
-               physical_quantity, reserved_quantity
-        FROM products
-        WHERE active = true
-        ORDER BY sku
-      `);
-
-      return result.rows.map((row) => this.toView(row));
-    });
+    return (await this.catalog.list()).map((record) => this.toView(record));
   }
 
   async get(id: string): Promise<ProductView> {
-    return this.database.transaction(async (client) => {
-      await this.reservationExpiration.releaseExpired(client);
-      const result = await client.query<ProductRow>(
-        `
-          SELECT id, sku, name, description, image_url, price_minor, currency,
-                 physical_quantity, reserved_quantity
-          FROM products
-          WHERE id = $1 AND active = true
-        `,
-        [id],
-      );
-
-      const product = result.rows[0];
-      if (!product) throw new NotFoundException('Product not found.');
-      return this.toView(product);
-    });
+    const record = await this.catalog.findById(id);
+    if (!record) throw new NotFoundException('Product not found.');
+    return this.toView(record);
   }
 
-  private toView(row: ProductRow): ProductView {
-    const unitPriceMinor = Number(row.price_minor);
+  private toView(row: ProductRecord): ProductView {
+    const unitPriceMinor = Number(row.priceMinor);
     if (!Number.isSafeInteger(unitPriceMinor)) {
-      throw new InternalServerErrorException(
-        'Product price exceeds the supported integer range.',
-      );
+      throw new InternalServerErrorException('Product price exceeds the supported integer range.');
     }
-
     return {
-      id: row.id,
-      sku: row.sku,
-      name: row.name,
-      description: row.description,
-      imageUrl: row.image_url,
-      unitPriceMinor,
-      currency: row.currency.trim(),
-      physicalQuantity: row.physical_quantity,
-      reservedQuantity: row.reserved_quantity,
-      availableQuantity: row.physical_quantity - row.reserved_quantity,
+      id: row.id, sku: row.sku, name: row.name, description: row.description,
+      imageUrl: row.imageUrl, unitPriceMinor, currency: row.currency.trim(),
+      physicalQuantity: row.physicalQuantity, reservedQuantity: row.reservedQuantity,
+      availableQuantity: row.physicalQuantity - row.reservedQuantity,
     };
   }
 }

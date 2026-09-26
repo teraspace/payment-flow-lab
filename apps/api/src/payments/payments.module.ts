@@ -8,6 +8,8 @@ import { PaymentsService } from './payments.service';
 import {
   PAYMENT_GATEWAY,
 } from './payment-gateway.contract';
+import { PAYMENT_PERSISTENCE } from './payment-persistence.port';
+import { PostgresPaymentPersistenceAdapter } from './postgres-payment-persistence.adapter';
 import {
   HttpPaymentGateway,
   PAYMENT_GATEWAY_FETCH,
@@ -19,6 +21,8 @@ import {
     { provide: PAYMENT_GATEWAY_FETCH, useValue: globalThis.fetch },
     HttpPaymentGateway,
     { provide: PAYMENT_GATEWAY, useExisting: HttpPaymentGateway },
+    PostgresPaymentPersistenceAdapter,
+    { provide: PAYMENT_PERSISTENCE, useExisting: PostgresPaymentPersistenceAdapter },
     PaymentsService,
   ],
   controllers: [PaymentsController],
