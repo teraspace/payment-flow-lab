@@ -7,7 +7,7 @@ interface ProductCatalogProps {
   loadingLabel?: string;
   error?: string;
   onRetry: () => void;
-  onSelect: (product: Product) => void;
+  onSelect: (product: Product, trigger: HTMLButtonElement) => void;
 }
 
 export function ProductCatalog({
@@ -86,7 +86,7 @@ export function ProductCatalog({
                   <button
                     className="button button--primary"
                     disabled={product.availableQuantity < 1}
-                    onClick={() => onSelect(product)}
+                    onClick={(event) => onSelect(product, event.currentTarget)}
                     type="button"
                   >
                     Pay with credit card

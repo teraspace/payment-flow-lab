@@ -68,6 +68,29 @@ describe('CheckoutDetailsForm', () => {
     mockTokenize.mockResolvedValue('tok_test_opaque');
   });
 
+  it('keeps keyboard focus in the modal and restores the previous control on close', async () => {
+    const user = userEvent.setup();
+    const launchButton = document.createElement('button');
+    launchButton.textContent = 'Open checkout';
+    document.body.append(launchButton);
+    launchButton.focus();
+    const onBack = jest.fn();
+    const { unmount } = renderModal({ onBack });
+
+    expect(screen.getByRole('heading', { name: 'Pay with credit card' })).toHaveFocus();
+    await screen.findByLabelText(/Leí y acepto/);
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: 'Volver' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Cerrar ventana de pago' })).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(onBack).toHaveBeenCalledTimes(1);
+
+    unmount();
+    expect(launchButton).toHaveFocus();
+    launchButton.remove();
+  });
+
   it('collects delivery and card data in the required modal and tokenizes only after consent', async () => {
     const user = userEvent.setup();
     const onSubmit = jest.fn().mockResolvedValue(undefined);

@@ -2,7 +2,7 @@
 
 A full-stack checkout system built as an engineering challenge and as a measured experiment in AI-assisted software delivery.
 
-The goal is to deliver a responsive React application, a NestJS API, PostgreSQL-backed inventory and checkout workflows, automated tests, and a reproducible AWS deployment. The application will integrate with a payment provider through a backend adapter.
+The repository implements a responsive React application, a NestJS API, PostgreSQL-backed inventory and checkout workflows, automated tests, and a reproducible AWS deployment. The API integrates with a sandbox payment provider through a backend adapter.
 
 ## Selected stack
 
@@ -12,13 +12,13 @@ The goal is to deliver a responsive React application, a NestJS API, PostgreSQL-
 - Runtime: AWS ECS on Fargate.
 - Infrastructure as code: Terraform.
 
-The API is planned as one modular service. This keeps the challenge small enough to operate while preserving clear domain boundaries. Kubernetes and a microservice split are out of scope unless evidence changes that decision.
+The API runs as one modular service. This keeps the challenge small enough to operate while preserving clear domain boundaries. Kubernetes and a microservice split are out of scope unless evidence changes that decision.
 
 ## Project status
 
-I0-I8 implementation work is merged and deployed. The 2026-09-25 I7 acceptance audit found gaps; I8 addressed the checkout-flow gaps and added direct README coverage evidence. PR [#17](https://github.com/teraspace/payment-flow-lab/pull/17) merged I8, and the release was deployed on 2026-09-25. The [acceptance report](docs/i7-final-acceptance.md) records the original audit state, deployment evidence, and what remains unverified.
+I0-I9 implementation work is merged. The I7 acceptance audit found gaps; I8 addressed the checkout-flow gaps and added direct README coverage evidence. The [acceptance report](docs/i7-final-acceptance.md) records that audit, the I8 deployment, and its remaining verification limits. [PR #20](https://github.com/teraspace/payment-flow-lab/pull/20) added typed result flows for checkout and payment commands; its API image `i9-dc226ce` is deployed on ECS task-definition revision 6. The [I9 release ledger](docs/ai-sdlc-ledger.md) records ECS 1/1 and public app, health, database readiness, catalog, and Swagger checks returning HTTP 200.
 
-PR #12 merged the React checkout, PR #13 added scoped sandbox-secret injection for ECS, [PR #14](https://github.com/teraspace/payment-flow-lab/pull/14) merged the I5 reliability scorecard, [PR #15](https://github.com/teraspace/payment-flow-lab/pull/15) records its deployment evidence, [PR #16](https://github.com/teraspace/payment-flow-lab/pull/16) captured the I7 audit, and [PR #17](https://github.com/teraspace/payment-flow-lab/pull/17) merged I8. The [deployed application](https://d2ump7odi96dfi.cloudfront.net) serves the checkout with its Fargate API; the public [Swagger UI](https://d2ump7odi96dfi.cloudfront.net/api/v1/docs) documents that API. I8 is deployed with API image `i8-2bc9e7f` (ECS task-definition revision 5). The deployment verification confirmed the frontend assets, ECS rollout, health endpoints, database readiness, and Swagger endpoint; it did not submit a new sandbox payment. I4 sandbox evidence includes approved, declined, pending/unknown, and refresh-recovery paths; no real card or charge was used.
+The [deployed application](https://d2ump7odi96dfi.cloudfront.net) connects the CloudFront frontend to the Fargate API; the public [Swagger UI](https://d2ump7odi96dfi.cloudfront.net/api/v1/docs) documents its endpoints. CloudFront still serves the I8 frontend assets: the visual progress correction from [PR #19](https://github.com/teraspace/payment-flow-lab/pull/19) is merged but awaits a frontend deployment. [PR #21](https://github.com/teraspace/payment-flow-lab/pull/21) recorded I9 deployment evidence, and [PR #22](https://github.com/teraspace/payment-flow-lab/pull/22) added the ER diagram below. [PR #23](https://github.com/teraspace/payment-flow-lab/pull/23) proposes the I10 modal, browser, and static security-header improvements; those are not yet deployed. No sandbox payment was submitted during the I9 deployment or I10 verification. Earlier I4 sandbox evidence includes approved, declined, pending/unknown, and refresh-recovery paths; no real card or charge was used.
 
 Review the [I7 final acceptance evidence](docs/i7-final-acceptance.md), [I5 reliability scorecard](docs/reliability-scorecard.md), [requirements and 100-point rubric](docs/requirements-traceability.md), [API contract](docs/api-contract.md), [payment and inventory lifecycle](docs/payment-lifecycle.md), [payment operations runbook](docs/payment-operations.md), and [open decisions](docs/open-decisions.md).
 
@@ -166,15 +166,15 @@ The challenge asks for branches and pull requests by feature and warns against a
 
 ## Delivery scorecard
 
-The challenge baseline is tracked as 100 points: README (5), responsive UI without overflow (5), complete user flow (20), API (20), test coverage (30), and a working deployed application (20). Report measured evidence for each item; do not infer points from code presence alone.
+The challenge baseline is 100 points: README (5), responsive UI without overflow (5), complete user flow (20), API (20), test coverage (30), and a working deployed application (20). The six optional criteria add another 50 points; their exact breakdown is in the [requirements traceability](docs/requirements-traceability.md). Report measured evidence for each item; do not infer points from code presence alone.
 
 ### Measured test coverage
 
-Latest local Jest coverage run on the I8 acceptance branch (2026-09-25):
+Latest local Jest coverage run on the I10 feature branch (2026-09-25):
 
 | Application | Suites / tests | Statements | Branches | Functions | Lines |
 |---|---:|---:|---:|---:|---:|
-| Web | 8 / 76 | 89.19% | 83.56% | 86.76% | 90.34% |
-| API | 10 / 88 | 89.70% | 81.85% | 94.28% | 91.03% |
+| Web | 8 / 77 | 89.58% | 84.06% | 86.61% | 90.68% |
+| API | 10 / 88 | 90.00% | 82.14% | 93.41% | 91.20% |
 
-Both application-wide suites exceed the brief's 80% coverage gate. The narrower payments module remains below 80% branch coverage (79.31%); `payments.service.ts` has 74.89% branch coverage. These are test-run measurements, not official challenge points. Reproduce with `npm run test:coverage --workspace @payment-flow-lab/web` and `npm run test:api -- --coverage`. The complete verdict and remaining live-evidence gates are in the [acceptance report](docs/i7-final-acceptance.md).
+Both application-wide suites exceed the brief's 80% coverage gate. The narrower payments module remains below 80% branch coverage (79.40%); `payments.service.ts` has 75.10% branch coverage. These are test-run measurements, not official challenge points. Reproduce with `npm run test:coverage --workspace @payment-flow-lab/web` and `npm run test:api -- --coverage`. The complete verdict and remaining live-evidence gates are in the [acceptance report](docs/i7-final-acceptance.md).

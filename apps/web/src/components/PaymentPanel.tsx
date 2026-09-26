@@ -20,7 +20,7 @@ interface PaymentPanelProps {
   canStartAttempt: boolean;
   paymentToken: string | null;
   paymentAcceptance: AcceptanceDocuments | null;
-  onRequestCard: () => void;
+  onRequestCard: (trigger?: HTMLButtonElement) => void;
   onPaymentTokenUsed: () => void;
   onAttemptResult: (attempt: PaymentAttempt) => void;
   onRefreshAttempt: () => Promise<unknown>;
@@ -254,7 +254,7 @@ export function PaymentPanel({
                     <strong>Tarjeta y autorización requeridas</strong>
                     <p>Después de una actualización, vuelve a ingresar la tarjeta ficticia y aceptar los documentos.</p>
                   </div>
-                  <button className="button button--secondary" onClick={onRequestCard} type="button">
+                  <button className="button button--secondary" onClick={(event) => onRequestCard(event.currentTarget)} type="button">
                     Ingresar tarjeta
                   </button>
                 </div>
