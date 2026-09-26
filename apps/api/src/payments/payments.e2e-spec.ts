@@ -722,6 +722,183 @@ describe('payment lifecycle API (PostgreSQL)', () => {
     expect(count.rows[0]?.count).toBe('0');
   });
 
+  it('rejects sandbox events when event verification is disabled or production mode is selected', async () => {
+    const checkout = await createCheckout();
+    const attempt = await postPayment(checkout.id, 'payment-event-config-00001').expect(201);
+    const transaction = transactions.get('provider-tx-1');
+    if (!transaction) throw new Error('Provider test transaction is missing.');
+    const event = signedEvent(transaction, Math.floor(Date.now() / 1000), eventSecret);
+
+    const config = app.get(ConfigService);
+    config.set('PAYMENT_GATEWAY_EVENTS_SECRET', '   ');
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(event)
+      .expect(503);
+
+    config.set('PAYMENT_GATEWAY_EVENTS_SECRET', eventSecret);
+    config.set('PAYMENT_GATEWAY_ENVIRONMENT', 'prod');
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(event)
+      .expect(503);
+
+    config.set('PAYMENT_GATEWAY_ENVIRONMENT', 'test');
+    const count = await database.query<{ count: string }>(
+      'SELECT count(*)::text AS count FROM payment_event_receipts',
+    );
+    expect(attempt.body.state).toBe('PENDING');
+    expect(count.rows[0]?.count).toBe('0');
+  });
+
+  it('deduplicates a repeated confirmed decline and flags a stale conflicting status', async () => {
+    const checkout = await createCheckout();
+    nextCreateStatus = 'DECLINED';
+    const created = await postPayment(checkout.id, 'payment-terminal-event-0001').expect(201);
+    const transaction = transactions.get('provider-tx-1');
+    if (!transaction) throw new Error('Provider test transaction is missing.');
+    const timestamp = Math.floor(Date.now() / 1000) + 2;
+
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent(transaction, timestamp, eventSecret))
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent(transaction, timestamp + 1, eventSecret))
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/webhooks/payment-events')
+      .send(signedEvent({ ...transaction, status: 'PENDING' }, timestamp + 2, eventSecret))
+      .expect(200);
+
+    const persisted = await database.query<{
+      state: string;
+      manual_review_required_at: Date | null;
+      duplicate_count: string;
+      stale_count: string;
+      checkout_state: string;
+      reservation_state: string;
+      reserved_quantity: number;
+    }>(`
+      SELECT attempt.state, attempt.manual_review_required_at,
+             (SELECT count(*)::text FROM payment_event_receipts
+              WHERE payment_attempt_id = attempt.id AND disposition = 'DUPLICATE') AS duplicate_count,
+             (SELECT count(*)::text FROM payment_event_receipts
+              WHERE payment_attempt_id = attempt.id AND disposition = 'STALE') AS stale_count,
+             checkout.state AS checkout_state, reservation.state AS reservation_state,
+             product.reserved_quantity
+      FROM payment_attempts AS attempt
+      JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
+      JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+      JOIN products AS product ON product.id = reservation.product_id
+      WHERE attempt.id = $1
+    `, [created.body.attemptId]);
+
+    expect(persisted.rows[0]).toMatchObject({
+      state: 'DECLINED',
+      manual_review_required_at: expect.any(Date),
+      duplicate_count: '2',
+      stale_count: '1',
+      checkout_state: 'PAYMENT_FAILED',
+      reservation_state: 'HELD',
+      reserved_quantity: 1,
+    });
+  });
+
+  it('reconciles known transactions after temporary provider failures', async () => {
+    const checkout = await createCheckout();
+    const created = await postPayment(checkout.id, 'payment-batch-reconcile-01').expect(201);
+    await database.query(
+      `UPDATE payment_attempts SET last_reconciled_at = now() - interval '1 minute' WHERE id = $1`,
+      [created.body.attemptId],
+    );
+    gateway.getTransaction.mockRejectedValueOnce(new PaymentGatewayUnavailableError());
+
+    await (paymentsService as unknown as { reconcileDueAttempts: () => Promise<void> })
+      .reconcileDueAttempts();
+
+    const deferred = await database.query<{
+      state: string;
+      reconciliation_lease_until: Date | null;
+    }>(`SELECT state, reconciliation_lease_until FROM payment_attempts WHERE id = $1`, [created.body.attemptId]);
+    expect(deferred.rows[0]).toMatchObject({ state: 'PENDING', reconciliation_lease_until: null });
+
+    currentStatuses.set('provider-tx-1', 'APPROVED');
+    await database.query(
+      `UPDATE payment_attempts SET last_reconciled_at = now() - interval '1 minute' WHERE id = $1`,
+      [created.body.attemptId],
+    );
+    await (paymentsService as unknown as { reconcileDueAttempts: () => Promise<void> })
+      .reconcileDueAttempts();
+
+    const completed = await database.query<{
+      state: string;
+      checkout_state: string;
+      reservation_state: string;
+      physical_quantity: number;
+      reserved_quantity: number;
+    }>(`
+      SELECT attempt.state, checkout.state AS checkout_state, reservation.state AS reservation_state,
+             product.physical_quantity, product.reserved_quantity
+      FROM payment_attempts AS attempt
+      JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
+      JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+      JOIN products AS product ON product.id = reservation.product_id
+      WHERE attempt.id = $1
+    `, [created.body.attemptId]);
+    expect(completed.rows[0]).toEqual({
+      state: 'APPROVED',
+      checkout_state: 'PAID',
+      reservation_state: 'COMMITTED',
+      physical_quantity: 6,
+      reserved_quantity: 0,
+    });
+  });
+
+  it('turns a stale dispatch without a provider id into an unknown outcome for review', async () => {
+    const checkout = await createCheckout();
+    const created = await postPayment(checkout.id, 'payment-stale-dispatch-01').expect(201);
+    await database.query(
+      `UPDATE payment_attempts
+       SET state = 'DISPATCHING', provider_transaction_id = NULL,
+           provider_response_received_at = NULL,
+           dispatch_started_at = now() - interval '1 minute',
+           created_at = now() - interval '31 minutes', last_reconciled_at = NULL
+       WHERE id = $1`,
+      [created.body.attemptId],
+    );
+
+    await (paymentsService as unknown as { reconcileDueAttempts: () => Promise<void> })
+      .reconcileDueAttempts();
+
+    const recovered = await database.query<{
+      state: string;
+      checkout_state: string;
+      manual_review_required_at: Date | null;
+      reconciliation_lease_until: Date | null;
+      reservation_state: string;
+      reserved_quantity: number;
+    }>(`
+      SELECT attempt.state, checkout.state AS checkout_state, attempt.manual_review_required_at,
+             attempt.reconciliation_lease_until, reservation.state AS reservation_state,
+             product.reserved_quantity
+      FROM payment_attempts AS attempt
+      JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
+      JOIN reservations AS reservation ON reservation.checkout_id = checkout.id
+      JOIN products AS product ON product.id = reservation.product_id
+      WHERE attempt.id = $1
+    `, [created.body.attemptId]);
+    expect(recovered.rows[0]).toMatchObject({
+      state: 'UNKNOWN_OUTCOME',
+      checkout_state: 'UNKNOWN_OUTCOME',
+      manual_review_required_at: expect.any(Date),
+      reconciliation_lease_until: null,
+      reservation_state: 'HELD',
+      reserved_quantity: 1,
+    });
+  });
+
   it('records a correctly signed event without a matching payment attempt', async () => {
     const transaction: ProviderTransaction = {
       id: 'provider-tx-without-local-attempt',
