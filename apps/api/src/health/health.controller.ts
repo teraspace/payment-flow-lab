@@ -4,12 +4,13 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { DatabaseService } from '../database/database.service';
+import { Inject } from '@nestjs/common';
+import { DATABASE_READINESS, DatabaseReadinessPort } from './database-readiness.port';
 
 @ApiTags('health')
 @Controller('health')
 export class HealthController {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(@Inject(DATABASE_READINESS) private readonly readiness: DatabaseReadinessPort) {}
 
   @Get('live')
   @ApiOperation({ summary: 'Check whether the API process is running' })
@@ -24,7 +25,7 @@ export class HealthController {
   @ApiResponse({ status: 503, description: 'A required dependency is unavailable.' })
   async ready(): Promise<{ status: 'ok'; checks: { database: 'ok' } }> {
     try {
-      await this.database.ping();
+      await this.readiness.ping();
     } catch {
       throw new ServiceUnavailableException({
         status: 'error',

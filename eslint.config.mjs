@@ -17,6 +17,28 @@ export default tseslint.config(
     },
   },
   {
+    files: ['apps/api/src/{checkouts,guest-sessions,health,payments,products}/*.{service,controller}.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'pg',
+              message: 'Application services and HTTP controllers must depend on ports, not PostgreSQL.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['../database/**'],
+              message: 'Application services and HTTP controllers must depend on ports, not DatabaseService.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['apps/web/**/*.{ts,tsx}'],
     languageOptions: {
       globals: globals.browser,

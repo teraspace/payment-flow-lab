@@ -1,31 +1,27 @@
 import { Logger } from '@nestjs/common';
-import { DatabaseService } from '../database/database.service';
+import { PersonalDataRetentionPort } from './personal-data-retention.port';
 import { CheckoutPiiRetentionService } from './checkout-pii-retention.service';
 
-function serviceFor(results: unknown[]) {
-  const client = { query: jest.fn().mockImplementation(() => Promise.resolve(results.shift())) };
-  const database = {
-    transaction: jest.fn((work: (client: unknown) => Promise<unknown>) => work(client)),
-  } as unknown as DatabaseService;
-  return { service: new CheckoutPiiRetentionService(database), client, database };
+function serviceFor(results: number[]) {
+  const retention: jest.Mocked<PersonalDataRetentionPort> = {
+    redactExpiredCheckoutBatch: jest.fn().mockImplementation(async () => results.shift() ?? 0),
+  };
+  return { service: new CheckoutPiiRetentionService(retention), retention };
 }
 
 describe('CheckoutPiiRetentionService', () => {
   afterEach(() => jest.restoreAllMocks());
 
   it('returns zero when no expired checkout needs redaction', async () => {
-    const { service, client } = serviceFor([{ rows: [], rowCount: 0 }]);
+    const { service, retention } = serviceFor([0]);
     await expect(service.redactExpiredPersonalData()).resolves.toBe(0);
-    expect(client.query).toHaveBeenCalledTimes(1);
+    expect(retention.redactExpiredCheckoutBatch).toHaveBeenCalledWith(500);
   });
 
   it('continues in bounded batches until fewer than 500 records are returned', async () => {
-    const { service, client } = serviceFor([
-      { rows: [{ redacted_count: 500 }], rowCount: 1 },
-      { rows: [{ redacted_count: 3 }], rowCount: 1 },
-    ]);
+    const { service, retention } = serviceFor([500, 3]);
     await expect(service.redactExpiredPersonalData()).resolves.toBe(503);
-    expect(client.query).toHaveBeenCalledTimes(2);
+    expect(retention.redactExpiredCheckoutBatch).toHaveBeenCalledTimes(2);
   });
 
   it('runs one redaction at a time, logs completed work, and clears its interval', async () => {
@@ -39,20 +35,20 @@ describe('CheckoutPiiRetentionService', () => {
     }) as unknown as typeof global.setInterval);
     const clearInterval = jest.spyOn(global, 'clearInterval').mockImplementation(() => undefined);
     const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-    const database = {
-      transaction: jest.fn().mockReturnValueOnce(pending).mockResolvedValueOnce(0),
-    } as unknown as DatabaseService;
-    const service = new CheckoutPiiRetentionService(database);
+    const retention: jest.Mocked<PersonalDataRetentionPort> = {
+      redactExpiredCheckoutBatch: jest.fn().mockReturnValueOnce(pending).mockResolvedValueOnce(0),
+    };
+    const service = new CheckoutPiiRetentionService(retention);
 
     service.onModuleInit();
     expect(setInterval).toHaveBeenCalledTimes(1);
     expect(timer.unref).toHaveBeenCalledTimes(1);
     tick?.();
     tick?.();
-    expect(database.transaction).toHaveBeenCalledTimes(1);
+    expect(retention.redactExpiredCheckoutBatch).toHaveBeenCalledTimes(1);
     finishFirst(500);
     await service.onModuleDestroy();
-    expect(database.transaction).toHaveBeenCalledTimes(2);
+    expect(retention.redactExpiredCheckoutBatch).toHaveBeenCalledTimes(2);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('500 expired checkouts'));
     expect(clearInterval).toHaveBeenCalledWith(timer);
   });
@@ -69,8 +65,10 @@ describe('CheckoutPiiRetentionService', () => {
     }) as unknown as typeof global.setInterval);
     jest.spyOn(global, 'clearInterval').mockImplementation(() => undefined);
     const logger = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-    const database = { transaction: jest.fn().mockRejectedValue(error) } as unknown as DatabaseService;
-    const service = new CheckoutPiiRetentionService(database);
+    const retention = {
+      redactExpiredCheckoutBatch: jest.fn().mockRejectedValue(error),
+    } as unknown as PersonalDataRetentionPort;
+    const service = new CheckoutPiiRetentionService(retention);
     service.onModuleInit();
     tick?.();
     await service.onModuleDestroy();

@@ -1,6 +1,6 @@
 import { InternalServerErrorException } from '@nestjs/common';
 import { PoolClient } from 'pg';
-import { ReservationExpirationService } from './reservation-expiration.service';
+import { PostgresReservationExpirationAdapter } from './postgres-reservation-expiration.adapter';
 
 const candidate = {
   id: 'reservation-1',
@@ -13,8 +13,8 @@ function queryResult(rows: unknown[] = [], rowCount = rows.length) {
   return { rows, rowCount };
 }
 
-describe('ReservationExpirationService', () => {
-  const service = new ReservationExpirationService();
+describe('PostgresReservationExpirationAdapter', () => {
+  const service = new PostgresReservationExpirationAdapter();
 
   it('does no work when no held reservation has expired', async () => {
     const client = { query: jest.fn().mockResolvedValue(queryResult()) } as unknown as PoolClient;

@@ -1,14 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { DatabaseService } from '../database/database.service';
+import { GUEST_SESSION_PERSISTENCE, GuestSessionPersistencePort } from './guest-session-persistence.port';
 
 export const GUEST_SESSION_COOKIE = 'checkout_session';
-
-interface GuestSessionRow {
-  id: string;
-  expires_at: Date;
-}
 
 export interface GuestSessionInitialization {
   id: string;
@@ -19,46 +14,30 @@ export interface GuestSessionInitialization {
 @Injectable()
 export class GuestSessionsService {
   constructor(
-    private readonly database: DatabaseService,
+    @Inject(GUEST_SESSION_PERSISTENCE) private readonly persistence: GuestSessionPersistencePort,
     private readonly config: ConfigService,
   ) {}
 
   async initialize(cookieToken?: string): Promise<GuestSessionInitialization> {
-    await this.database.query(`
-      DELETE FROM guest_sessions AS session
-      WHERE session.expires_at <= now()
-        AND NOT EXISTS (
-          SELECT 1
-          FROM checkouts AS checkout
-          WHERE checkout.guest_session_id = session.id
-        )
-    `);
+    await this.persistence.deleteExpiredSessionsWithoutCheckouts();
 
     const existing = cookieToken ? await this.findActive(cookieToken) : null;
     if (existing) {
       return {
         id: existing.id,
-        expiresAt: existing.expires_at,
+        expiresAt: existing.expiresAt,
         cookieToken: null,
       };
     }
 
     const token = randomBytes(32).toString('base64url');
     const ttlDays = this.config.getOrThrow<number>('GUEST_SESSION_TTL_DAYS');
-    const result = await this.database.query<GuestSessionRow>(
-      `
-        INSERT INTO guest_sessions (token_hash, expires_at)
-        VALUES ($1, now() + ($2 * interval '1 day'))
-        RETURNING id, expires_at
-      `,
-      [this.hash(token), ttlDays],
-    );
-    const created = result.rows[0];
+    const created = await this.persistence.create(this.hash(token), ttlDays);
     if (!created) throw new Error('Guest session was not created.');
 
     return {
       id: created.id,
-      expiresAt: created.expires_at,
+      expiresAt: created.expiresAt,
       cookieToken: token,
     };
   }
@@ -71,18 +50,10 @@ export class GuestSessionsService {
     return session.id;
   }
 
-  private async findActive(cookieToken: string): Promise<GuestSessionRow | null> {
+  private async findActive(cookieToken: string): Promise<{ id: string; expiresAt: Date } | null> {
     if (!/^[A-Za-z0-9_-]{40,64}$/.test(cookieToken)) return null;
 
-    const result = await this.database.query<GuestSessionRow>(
-      `
-        SELECT id, expires_at
-        FROM guest_sessions
-        WHERE token_hash = $1 AND expires_at > now()
-      `,
-      [this.hash(cookieToken)],
-    );
-    return result.rows[0] ?? null;
+    return this.persistence.findActiveByTokenHash(this.hash(cookieToken));
   }
 
   private hash(value: string): string {

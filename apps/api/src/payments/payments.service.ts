@@ -10,15 +10,11 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PoolClient, QueryResultRow } from 'pg';
-import { DatabaseService } from '../database/database.service';
-import { ReservationExpirationService } from '../inventory/reservation-expiration.service';
 import { CreatePaymentAttemptDto } from './dto/create-payment-attempt.dto';
 import {
   PAYMENT_GATEWAY,
   PaymentGateway,
   ProviderTransaction,
-  ProviderTransactionStatus,
   ProviderAcceptanceDocuments,
   VerifiedProviderEvent,
 } from './payment-gateway.contract';
@@ -28,6 +24,7 @@ import {
   PaymentGatewayUnavailableError,
 } from './payment-gateway.errors';
 import { PaymentAttemptView } from './payment-attempt.view';
+import { PAYMENT_PERSISTENCE, PaymentPersistencePort, PaymentTransactionPort } from './payment-persistence.port';
 import { ProviderEventEnvelope, verifyProviderEvent } from './payment-signatures';
 import { andThen, andThenAsync, err, ok, Result } from '../core/result';
 import { UseCaseError, useCaseError } from '../core/use-case-error';
@@ -35,79 +32,9 @@ import { UseCaseError, useCaseError } from '../core/use-case-error';
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{16,128}$/;
 const PAYMENT_RETRY_WINDOW_SECONDS = 600;
 const RECONCILIATION_INTERVAL_MS = 30_000;
-const RECONCILIATION_LEASE_SECONDS = 25;
-const RECONCILIATION_BATCH_SIZE = 5;
 const DISPATCH_STALE_SECONDS = 20;
 const EVENT_MAX_AGE_SECONDS = 48 * 60 * 60;
 const PAYMENT_RELEVANT_STATES = ['DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME', 'APPROVED', 'DECLINED', 'ERROR', 'VOIDED'];
-
-interface CheckoutPaymentData extends QueryResultRow {
-  id: string;
-  state: string;
-  total_minor: string;
-  currency: string;
-  customer_email: string | null;
-}
-
-interface CheckoutForPayment extends CheckoutPaymentData {
-  reservation_state: 'HELD' | 'RELEASED' | 'COMMITTED';
-  reservation_expires_at: Date;
-}
-
-interface AttemptRow extends QueryResultRow {
-  id: string;
-  checkout_id: string;
-  attempt_number: number;
-  state: PaymentAttemptView['state'];
-  idempotency_key_hash: string;
-  request_fingerprint_hash: string | null;
-  provider_reference: string;
-  provider_transaction_id: string | null;
-  amount_cop: string;
-  currency: string;
-  provider_status: ProviderTransactionStatus | null;
-  provider_status_updated_at: Date | null;
-  last_reconciled_at: Date | null;
-  reconciliation_lease_until: Date | null;
-  manual_review_required_at: Date | null;
-  created_at: Date;
-  updated_at: Date;
-  provider_response_received_at: Date | null;
-}
-
-interface AttemptPaymentData extends QueryResultRow {
-  id: string;
-  checkout_id: string;
-  attempt_number: number;
-  state: PaymentAttemptView['state'];
-  provider_reference: string;
-  provider_transaction_id: string | null;
-  amount_cop: string;
-  currency: string;
-  provider_status: ProviderTransactionStatus | null;
-  provider_status_updated_at: Date | null;
-  request_fingerprint_hash: string | null;
-  provider_response_received_at: Date | null;
-}
-
-interface AttemptContext extends AttemptPaymentData {
-  reservation_id: string;
-  reservation_state: 'HELD' | 'RELEASED' | 'COMMITTED';
-  reservation_expires_at: Date;
-  reservation_expired: boolean;
-  reservation_product_id: string;
-  reservation_quantity: number;
-  checkout_state: string;
-}
-
-interface ReconciliationCandidate extends QueryResultRow {
-  id: string;
-  provider_transaction_id: string | null;
-  state: PaymentAttemptView['state'];
-  created_at: Date;
-  dispatch_started_at: Date | null;
-  provider_response_received_at: Date | null;
-}
 
 interface AttemptResult {
   attempt: PaymentAttemptView;
@@ -126,15 +53,6 @@ interface PreparedAttempt {
   } | null;
 }
 
-type EventDisposition =
-  | 'APPLIED'
-  | 'DUPLICATE'
-  | 'UNMATCHED'
-  | 'MISMATCH'
-  | 'STALE'
-  | 'CONTRADICTORY'
-  | 'IGNORED';
-
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PaymentsService.name);
@@ -142,9 +60,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   private activeReconciliation?: Promise<void>;
 
   constructor(
-    private readonly database: DatabaseService,
+    @Inject(PAYMENT_PERSISTENCE) private readonly persistence: PaymentPersistencePort,
     private readonly config: ConfigService,
-    private readonly reservationExpiration: ReservationExpirationService,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGateway,
   ) {}
 
@@ -236,26 +153,17 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       AttemptResult,
       UseCaseError
     >(preparedInput, async ({ idempotencyKeyHash, requestFingerprintHash }) => {
-      const preparedResult = await this.database.transactionResult<PreparedAttempt, UseCaseError>(
-        async (client) => {
-          await this.reservationExpiration.releaseExpired(client);
-          const checkout = await this.lockCheckout(client, sessionId, checkoutId);
+      const preparedResult = await this.persistence.transactionResult<PreparedAttempt, UseCaseError>(
+        async (unitOfWork) => {
+          await unitOfWork.releaseExpiredReservations();
+          const checkout = await unitOfWork.lockCheckoutForAttempt(sessionId, checkoutId);
           if (!checkout) {
             return err(useCaseError('CHECKOUT_NOT_FOUND', 'Checkout not found.'));
           }
 
-          const replay = await client.query<AttemptRow>(
-            `
-          SELECT *
-          FROM payment_attempts
-          WHERE checkout_id = $1 AND idempotency_key_hash = $2
-          FOR UPDATE
-        `,
-            [checkoutId, idempotencyKeyHash],
-          );
-          const prior = replay.rows[0];
+          const prior = await unitOfWork.findAttemptByIdempotencyKey(checkoutId, idempotencyKeyHash);
           if (prior) {
-            if (prior.request_fingerprint_hash === null) {
+            if (prior.fingerprintHash === null) {
               return err(
                 useCaseError(
                   'IDEMPOTENCY_REPLAY_EXPIRED',
@@ -263,7 +171,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
                 ),
               );
             }
-            if (prior.request_fingerprint_hash !== requestFingerprintHash) {
+            if (prior.fingerprintHash !== requestFingerprintHash) {
               return err(
                 useCaseError(
                   'IDEMPOTENCY_PAYLOAD_CONFLICT',
@@ -272,7 +180,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
               );
             }
             return ok({
-              attempt: this.toView(prior),
+              attempt: prior.view,
               replayed: true,
               context: null,
             });
@@ -287,14 +195,14 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
             );
           }
           if (
-            checkout.reservation_state !== 'HELD' ||
-            checkout.reservation_expires_at <= new Date()
+            checkout.reservationState !== 'HELD' ||
+            checkout.reservationExpiresAt <= new Date()
           ) {
             return err(
               useCaseError('RESERVATION_EXPIRED', 'The inventory reservation has expired.'),
             );
           }
-          if (!checkout.customer_email) {
+          if (!checkout.customerEmail) {
             return err(
               useCaseError(
                 'CHECKOUT_DATA_EXPIRED',
@@ -303,21 +211,9 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
             );
           }
 
-          const history = await client.query<{
-            attempt_number: number;
-            state: PaymentAttemptView['state'];
-          }>(
-            `
-          SELECT attempt_number, state
-          FROM payment_attempts
-          WHERE checkout_id = $1
-          ORDER BY attempt_number
-          FOR UPDATE
-        `,
-            [checkoutId],
-          );
+          const history = await unitOfWork.listAttemptHistory(checkoutId);
           if (
-            history.rows.some(({ state }) =>
+            history.some(({ state }) =>
               ['CREATED', 'DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME'].includes(state),
             )
           ) {
@@ -329,10 +225,10 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
             );
           }
 
-          const chargeAttempts = history.rows.filter(({ state }) =>
+          const chargeAttempts = history.filter(({ state }) =>
             PAYMENT_RELEVANT_STATES.includes(state),
           );
-          const confirmedFailures = history.rows.filter(
+          const confirmedFailures = history.filter(
             ({ state }) => state === 'DECLINED' || state === 'ERROR',
           ).length;
           if (confirmedFailures >= 2 || chargeAttempts.length >= 2) {
@@ -344,7 +240,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
             );
           }
           if (
-            history.rows.some(({ state }) => ['APPROVED', 'VOIDED'].includes(state)) ||
+            history.some(({ state }) => ['APPROVED', 'VOIDED'].includes(state)) ||
             checkout.state === 'PAID' ||
             checkout.state === 'CANCELLED'
           ) {
@@ -353,7 +249,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
             );
           }
 
-          const attemptNumber = (history.rows.at(-1)?.attempt_number ?? 0) + 1;
+          const attemptNumber = (history.at(-1)?.attemptNumber ?? 0) + 1;
           if (attemptNumber > 10) {
             return err(
               useCaseError(
@@ -364,47 +260,26 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
           }
 
           const reference = `pfl_${randomUUID()}`;
-          const inserted = await client.query<AttemptRow>(
-            `
-          INSERT INTO payment_attempts (
-            checkout_id, attempt_number, state, idempotency_key_hash,
-            request_fingerprint_hash, provider_reference, amount_cop, currency,
-            dispatch_started_at
-          )
-          VALUES ($1, $2, 'PENDING', $3, $4, $5, $6, $7, now())
-          RETURNING *
-        `,
-            [
-              checkoutId,
-              attemptNumber,
-              idempotencyKeyHash,
-              requestFingerprintHash,
-              reference,
-              checkout.total_minor,
-              checkout.currency.trim(),
-            ],
-          );
-          const attempt = inserted.rows[0];
-          if (!attempt) throw new Error('Payment attempt was not persisted.');
-
-          await client.query(
-            `
-          UPDATE checkouts
-          SET state = 'PAYMENT_PENDING', updated_at = now()
-          WHERE id = $1 AND state IN ('RESERVED', 'PAYMENT_FAILED')
-        `,
-            [checkoutId],
-          );
+          const attempt = await unitOfWork.insertAttempt({
+            checkoutId,
+            attemptNumber,
+            idempotencyKeyHash,
+            fingerprintHash: requestFingerprintHash,
+            reference,
+            amountCop: checkout.totalMinor,
+            currency: checkout.currency.trim(),
+          });
+          await unitOfWork.setCheckoutPaymentPending(checkoutId);
 
           return ok({
-            attempt: this.toView(attempt),
+            attempt,
             replayed: false,
             context: {
-              attemptId: attempt.id,
+              attemptId: attempt.attemptId,
               reference,
-              amountCop: Number(checkout.total_minor),
+              amountCop: Number(checkout.totalMinor),
               currency: checkout.currency.trim() as 'COP',
-              customerEmail: checkout.customer_email,
+              customerEmail: checkout.customerEmail!,
             },
           });
         },
@@ -463,29 +338,16 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     attemptId: string,
   ): Promise<PaymentAttemptView> {
     const initial = await this.readAttempt(sessionId, checkoutId, attemptId);
-    const context = await this.database.query<{
-      provider_transaction_id: string | null;
-      last_reconciled_at: Date | null;
-      created_at: Date;
-      state: PaymentAttemptView['state'];
-    }>(
-      `
-        SELECT provider_transaction_id, last_reconciled_at, created_at, state
-        FROM payment_attempts
-        WHERE id = $1 AND checkout_id = $2
-      `,
-      [attemptId, checkoutId],
-    );
-    const row = context.rows[0];
+    const row = await this.persistence.findReconciliationState(checkoutId, attemptId);
     if (!row) throw new NotFoundException('Payment attempt not found.');
 
     if (
-      row.provider_transaction_id &&
+      row.providerTransactionId &&
       ['DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME'].includes(row.state) &&
-      this.shouldReconcile(row.last_reconciled_at)
+      this.shouldReconcile(row.lastReconciledAt)
     ) {
-      await this.reconcileById(attemptId, row.provider_transaction_id);
-      if (this.reviewIsDue(row.created_at)) {
+      await this.reconcileById(attemptId, row.providerTransactionId);
+      if (this.reviewIsDue(row.createdAt)) {
         await this.markManualReview(attemptId);
       }
       return this.readAttempt(sessionId, checkoutId, attemptId);
@@ -493,7 +355,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
 
     if (
       ['DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME'].includes(row.state) &&
-      this.reviewIsDue(row.created_at)
+      this.reviewIsDue(row.createdAt)
     ) {
       await this.markManualReview(attemptId);
       return this.readAttempt(sessionId, checkoutId, attemptId);
@@ -505,18 +367,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     sessionId: string,
     checkoutId: string,
   ): Promise<PaymentAttemptView> {
-    const latest = await this.database.query<{ id: string }>(
-      `
-        SELECT attempt.id
-        FROM payment_attempts AS attempt
-        JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
-        WHERE checkout.id = $1 AND checkout.guest_session_id = $2
-        ORDER BY attempt.attempt_number DESC
-        LIMIT 1
-      `,
-      [checkoutId, sessionId],
-    );
-    const attemptId = latest.rows[0]?.id;
+    const attemptId = await this.persistence.findLatestAttemptId(sessionId, checkoutId);
     if (!attemptId) throw new NotFoundException('No payment attempt exists for this checkout.');
     return this.getAttempt(sessionId, checkoutId, attemptId);
   }
@@ -555,158 +406,63 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException('Payment event timestamp is outside the accepted window.');
     }
 
-    await this.database.transaction(async (client) => {
-      const receipt = await client.query<{ id: string }>(
-        `
-          INSERT INTO payment_event_receipts (
-            event_fingerprint, provider_transaction_id, provider_reference,
-            provider_status, amount_in_cents, currency, event_occurred_at,
-            disposition
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 'IGNORED')
-          ON CONFLICT (event_fingerprint) DO NOTHING
-          RETURNING id
-        `,
-        [
-          event.fingerprint,
-          event.transactionId,
-          event.reference,
-          event.status,
-          event.amountInCents,
-          event.currency,
-          event.occurredAt,
-        ],
-      );
-      const receiptId = receipt.rows[0]?.id;
+    await this.persistence.transaction(async (unitOfWork) => {
+      const receiptId = await unitOfWork.insertEventReceipt({
+        fingerprint: event.fingerprint,
+        transactionId: event.transactionId,
+        reference: event.reference,
+        status: event.status,
+        amountInCents: event.amountInCents,
+        currency: event.currency,
+        occurredAt: event.occurredAt,
+      });
       if (!receiptId) return;
 
-      const attempt = await client.query<{ id: string }>(
-        'SELECT id FROM payment_attempts WHERE provider_reference = $1',
-        [event.reference],
-      );
-      const attemptId = attempt.rows[0]?.id;
+      const attemptId = await unitOfWork.findAttemptIdByReference(event.reference);
       if (!attemptId) {
-        await this.setReceiptDisposition(client, receiptId, null, 'UNMATCHED');
+        await unitOfWork.setReceiptDisposition(receiptId, null, 'UNMATCHED');
         return;
       }
 
       const disposition = await this.applyTransactionInTransaction(
-        client,
+        unitOfWork,
         this.toProviderTransaction(event),
         event.occurredAt,
         attemptId,
       );
-      await this.setReceiptDisposition(client, receiptId, attemptId, disposition);
+      await unitOfWork.setReceiptDisposition(receiptId, attemptId, disposition);
     });
-  }
-
-  private async lockCheckout(
-    client: PoolClient,
-    sessionId: string,
-    checkoutId: string,
-  ): Promise<CheckoutForPayment | null> {
-    const checkout = await client.query<CheckoutPaymentData>(
-      `
-        SELECT c.id, c.state, c.total_minor, c.currency,
-               customer.email AS customer_email
-        FROM checkouts AS c
-        JOIN customers AS customer ON customer.id = c.customer_id
-        WHERE c.id = $1 AND c.guest_session_id = $2
-        FOR UPDATE OF c
-      `,
-      [checkoutId, sessionId],
-    );
-    const lockedCheckout = checkout.rows[0];
-    if (!lockedCheckout) return null;
-
-    const reservation = await client.query<{
-      state: CheckoutForPayment['reservation_state'];
-      expires_at: Date;
-    }>(
-      `SELECT state, expires_at
-       FROM reservations
-       WHERE checkout_id = $1
-       FOR UPDATE`,
-      [checkoutId],
-    );
-    const lockedReservation = reservation.rows[0];
-    if (!lockedReservation) return null;
-
-    return {
-      ...lockedCheckout,
-      reservation_state: lockedReservation.state,
-      reservation_expires_at: lockedReservation.expires_at,
-    };
   }
 
   private async markLocalFailure(attemptId: string): Promise<void> {
-    await this.database.transaction(async (client) => {
-      const row = await this.lockAttemptContext(client, attemptId);
-      if (!row || !this.isDispatchInFlight(row)) return;
-      await client.query(
-        `
-          UPDATE payment_attempts
-          SET state = 'FAILED_LOCAL', reconciliation_lease_until = NULL,
-              updated_at = now()
-          WHERE id = $1
-        `,
-        [attemptId],
-      );
-      await client.query(
-        `UPDATE checkouts SET state = 'RESERVED', updated_at = now()
-         WHERE id = $1 AND state = 'PAYMENT_PENDING'`,
-        [row.checkout_id],
-      );
+    await this.persistence.transaction(async (unitOfWork) => {
+      const attempt = await unitOfWork.lockAttemptContext(attemptId);
+      if (!attempt || !this.isDispatchInFlight(attempt)) return;
+      await unitOfWork.updateAttemptLocalState(attemptId, 'FAILED_LOCAL');
+      await unitOfWork.setCheckoutAfterDispatchFailure(attempt.checkoutId, 'RESERVED');
     });
   }
 
-  private isDispatchInFlight(row: AttemptContext): boolean {
-    return (row.state === 'DISPATCHING' || row.state === 'PENDING') &&
-      row.provider_response_received_at === null;
+  private isDispatchInFlight(attempt: import('./payment-persistence.port').PaymentAttemptContext): boolean {
+    return (attempt.state === 'DISPATCHING' || attempt.state === 'PENDING') &&
+      attempt.providerResponseReceivedAt === null;
   }
 
   private async markRejected(attemptId: string, httpStatus: number): Promise<void> {
-    await this.database.transaction(async (client) => {
-      const row = await this.lockAttemptContext(client, attemptId);
-      if (!row || !this.isDispatchInFlight(row)) return;
-      await client.query(
-        `
-          UPDATE payment_attempts
-          SET state = 'REJECTED_NO_TRANSACTION',
-              provider_http_status = $2,
-              reconciliation_lease_until = NULL,
-              updated_at = now()
-          WHERE id = $1
-        `,
-        [attemptId, httpStatus],
-      );
-      await client.query(
-        `UPDATE checkouts SET state = 'RESERVED', updated_at = now()
-         WHERE id = $1 AND state = 'PAYMENT_PENDING'`,
-        [row.checkout_id],
-      );
+    await this.persistence.transaction(async (unitOfWork) => {
+      const attempt = await unitOfWork.lockAttemptContext(attemptId);
+      if (!attempt || !this.isDispatchInFlight(attempt)) return;
+      await unitOfWork.updateAttemptLocalState(attemptId, 'REJECTED_NO_TRANSACTION', httpStatus);
+      await unitOfWork.setCheckoutAfterDispatchFailure(attempt.checkoutId, 'RESERVED');
     });
   }
 
   private async markUnknown(attemptId: string): Promise<void> {
-    await this.database.transaction(async (client) => {
-      const row = await this.lockAttemptContext(client, attemptId);
-      if (!row || !this.isDispatchInFlight(row)) return;
-      await client.query(
-        `
-          UPDATE payment_attempts
-          SET state = 'UNKNOWN_OUTCOME', unknown_outcome_at = now(),
-              reconciliation_lease_until = NULL,
-              updated_at = now()
-          WHERE id = $1
-        `,
-        [attemptId],
-      );
-      await client.query(
-        `UPDATE checkouts SET state = 'UNKNOWN_OUTCOME', updated_at = now()
-         WHERE id = $1 AND state = 'PAYMENT_PENDING'`,
-        [row.checkout_id],
-      );
+    await this.persistence.transaction(async (unitOfWork) => {
+      const attempt = await unitOfWork.lockAttemptContext(attemptId);
+      if (!attempt || !this.isDispatchInFlight(attempt)) return;
+      await unitOfWork.updateAttemptLocalState(attemptId, 'UNKNOWN_OUTCOME');
+      await unitOfWork.setCheckoutAfterDispatchFailure(attempt.checkoutId, 'UNKNOWN_OUTCOME');
     });
   }
 
@@ -714,374 +470,123 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     transaction: ProviderTransaction,
     occurredAt: Date,
     attemptId: string,
-  ): Promise<EventDisposition> {
-    return this.database.transaction((client) =>
-      this.applyTransactionInTransaction(client, transaction, occurredAt, attemptId),
+  ): Promise<import('./payment-persistence.port').PaymentEventDisposition> {
+    return this.persistence.transaction((unitOfWork) =>
+      this.applyTransactionInTransaction(unitOfWork, transaction, occurredAt, attemptId),
     );
   }
 
   private async applyTransactionInTransaction(
-    client: PoolClient,
+    unitOfWork: PaymentTransactionPort,
     transaction: ProviderTransaction,
     occurredAt: Date,
     attemptId: string,
-  ): Promise<EventDisposition> {
-    const attempt = await this.lockAttemptContext(client, attemptId);
+  ): Promise<import('./payment-persistence.port').PaymentEventDisposition> {
+    const attempt = await unitOfWork.lockAttemptContext(attemptId);
     if (!attempt) return 'UNMATCHED';
 
-    const expectedAmountInCents = BigInt(attempt.amount_cop) * 100n;
+    const expectedAmountInCents = BigInt(attempt.amountCop) * 100n;
     if (
-      transaction.reference !== attempt.provider_reference ||
+      transaction.reference !== attempt.providerReference ||
       BigInt(transaction.amountInCents) !== expectedAmountInCents ||
       transaction.currency !== attempt.currency.trim() ||
-      (attempt.provider_transaction_id &&
-        attempt.provider_transaction_id !== transaction.id)
+      (attempt.providerTransactionId && attempt.providerTransactionId !== transaction.id)
     ) {
-      await client.query(
-        `UPDATE payment_attempts
-        SET state = CASE WHEN provider_response_received_at IS NULL THEN 'UNKNOWN_OUTCOME' ELSE state END,
-             unknown_outcome_at = CASE WHEN provider_response_received_at IS NULL THEN now() ELSE unknown_outcome_at END,
-             provider_response_received_at = COALESCE(provider_response_received_at, now()),
-             manual_review_required_at = COALESCE(manual_review_required_at, now()),
-             reconciliation_lease_until = NULL, last_reconciled_at = now(),
-             updated_at = now() WHERE id = $1`,
-        [attemptId],
+      await unitOfWork.recordTransactionMismatch(
+        attemptId,
+        attempt.providerResponseReceivedAt === null,
       );
-      if (attempt.provider_response_received_at === null) {
-        await client.query(
-          `UPDATE checkouts SET state = 'UNKNOWN_OUTCOME', updated_at = now()
-           WHERE id = $1 AND state = 'PAYMENT_PENDING'`,
-          [attempt.checkout_id],
-        );
-      }
       return 'MISMATCH';
     }
 
-    if (
-      attempt.provider_status_updated_at &&
-      occurredAt < attempt.provider_status_updated_at
-    ) {
-      await client.query(
-        `UPDATE payment_attempts
-         SET manual_review_required_at = CASE
-               WHEN state IN ('APPROVED', 'DECLINED', 'ERROR', 'VOIDED')
-                 AND provider_status IS DISTINCT FROM $2
-               THEN COALESCE(manual_review_required_at, now())
-               ELSE manual_review_required_at
-             END,
-             reconciliation_lease_until = NULL, last_reconciled_at = now(),
-             updated_at = now() WHERE id = $1`,
-        [attemptId, transaction.status],
-      );
+    if (attempt.providerStatusUpdatedAt && occurredAt < attempt.providerStatusUpdatedAt) {
+      const terminalConflict =
+        ['APPROVED', 'DECLINED', 'ERROR', 'VOIDED'].includes(attempt.state) &&
+        attempt.providerStatus !== transaction.status;
+      await unitOfWork.recordStaleTransaction(attemptId, terminalConflict);
       return 'STALE';
     }
 
     if (attempt.state === 'APPROVED') {
       if (transaction.status === 'APPROVED') {
-        await client.query(
-          `UPDATE payment_attempts SET reconciliation_lease_until = NULL, updated_at = now() WHERE id = $1`,
-          [attemptId],
-        );
+        await unitOfWork.clearAttemptLease(attemptId);
         return 'DUPLICATE';
       }
-      await client.query(
-        `UPDATE payment_attempts
-         SET manual_review_required_at = COALESCE(manual_review_required_at, now()),
-             reconciliation_lease_until = NULL, last_reconciled_at = now(), updated_at = now()
-         WHERE id = $1`,
-        [attemptId],
-      );
+      await unitOfWork.recordStaleTransaction(attemptId, true);
       return 'CONTRADICTORY';
     }
+
     if (
       ['DECLINED', 'ERROR', 'VOIDED'].includes(attempt.state) &&
-      attempt.provider_status === transaction.status
+      attempt.providerStatus === transaction.status
     ) {
-      await client.query(
-        `UPDATE payment_attempts SET reconciliation_lease_until = NULL, updated_at = now() WHERE id = $1`,
-        [attemptId],
-      );
+      await unitOfWork.clearAttemptLease(attemptId);
       return 'DUPLICATE';
     }
     if (
       ['DECLINED', 'ERROR', 'VOIDED'].includes(attempt.state) &&
-      transaction.status !== 'APPROVED' &&
-      transaction.status !== 'VOIDED'
+      transaction.status !== 'APPROVED' && transaction.status !== 'VOIDED'
     ) {
-      await client.query(
-        `UPDATE payment_attempts
-         SET manual_review_required_at = COALESCE(manual_review_required_at, now()),
-             reconciliation_lease_until = NULL, last_reconciled_at = now(), updated_at = now()
-         WHERE id = $1`,
-        [attemptId],
-      );
+      await unitOfWork.recordStaleTransaction(attemptId, true);
       return 'STALE';
     }
 
-    const nextState = transaction.status;
-    await client.query(
-      `
-        UPDATE payment_attempts
-        SET state = $2, provider_status = $2,
-            provider_transaction_id = COALESCE(provider_transaction_id, $3),
-            provider_status_updated_at = $4,
-            provider_response_received_at = COALESCE(provider_response_received_at, now()),
-            last_reconciled_at = now(),
-            unknown_outcome_at = NULL,
-            reconciliation_lease_until = NULL,
-            updated_at = now()
-        WHERE id = $1
-      `,
-      [attemptId, nextState, transaction.id, occurredAt],
-    );
-
-    if (nextState === 'PENDING') {
-      if (!['EXPIRED', 'CANCELLED', 'PAID', 'FULFILLMENT_EXCEPTION'].includes(attempt.checkout_state)) {
-        await client.query(
-          `UPDATE checkouts SET state = 'PAYMENT_PENDING', updated_at = now() WHERE id = $1`,
-          [attempt.checkout_id],
-        );
+    await unitOfWork.updateAttemptFromProvider(transaction, occurredAt, attemptId);
+    if (transaction.status === 'PENDING') {
+      if (!['EXPIRED', 'CANCELLED', 'PAID', 'FULFILLMENT_EXCEPTION'].includes(attempt.checkoutState)) {
+        await unitOfWork.setCheckoutPaymentPendingUnlessClosed(attempt.checkoutId);
       }
       return 'APPLIED';
     }
 
-    if (nextState === 'APPROVED') {
-      const retryWindowExpired =
-        attempt.checkout_state === 'PAYMENT_FAILED' && attempt.reservation_expired;
+    if (transaction.status === 'APPROVED') {
+      const retryWindowExpired = attempt.checkoutState === 'PAYMENT_FAILED' && attempt.reservationExpired;
       if (
-        attempt.reservation_state === 'HELD' &&
-        !['EXPIRED', 'CANCELLED'].includes(attempt.checkout_state) &&
+        attempt.reservationState === 'HELD' &&
+        !['EXPIRED', 'CANCELLED'].includes(attempt.checkoutState) &&
         !retryWindowExpired
       ) {
-        const inventory = await client.query(
-          `
-            UPDATE products
-            SET physical_quantity = physical_quantity - $2,
-                reserved_quantity = reserved_quantity - $2,
-                updated_at = now()
-            WHERE id = $1 AND physical_quantity >= $2 AND reserved_quantity >= $2
-            RETURNING id
-          `,
-          [attempt.reservation_product_id, attempt.reservation_quantity],
-        );
-        if (inventory.rowCount !== 1) {
-          throw new Error('Reserved inventory counters are inconsistent.');
-        }
-        const committed = await client.query(
-          `UPDATE reservations SET state = 'COMMITTED', committed_at = now()
-           WHERE id = $1 AND state = 'HELD' RETURNING id`,
-          [attempt.reservation_id],
-        );
-        if (committed.rowCount !== 1) {
-          throw new Error('Inventory reservation could not be committed.');
-        }
-        await client.query(
-          `UPDATE checkouts SET state = 'PAID', updated_at = now() WHERE id = $1`,
-          [attempt.checkout_id],
-        );
-        await client.query(
-          `
-            INSERT INTO fulfillments (checkout_id, state)
-            VALUES ($1, 'READY')
-            ON CONFLICT (checkout_id) DO NOTHING
-          `,
-          [attempt.checkout_id],
-        );
+        await unitOfWork.commitHeldInventory(attempt);
+        await unitOfWork.setCheckoutPaid(attempt.checkoutId);
+        await unitOfWork.createReadyFulfillment(attempt.checkoutId);
       } else {
-        if (attempt.reservation_state === 'HELD') {
-          await this.releaseReservation(client, attempt.reservation_id);
+        if (attempt.reservationState === 'HELD') {
+          await unitOfWork.releaseReservation(attempt.reservationId);
         }
-        await client.query(
-          `UPDATE checkouts SET state = 'FULFILLMENT_EXCEPTION', updated_at = now() WHERE id = $1`,
-          [attempt.checkout_id],
-        );
-        await client.query(
-          `
-            INSERT INTO fulfillments (checkout_id, state)
-            VALUES ($1, 'FULFILLMENT_EXCEPTION')
-            ON CONFLICT (checkout_id) DO UPDATE
-              SET state = 'FULFILLMENT_EXCEPTION', updated_at = now()
-          `,
-          [attempt.checkout_id],
-        );
+        await unitOfWork.setCheckoutFulfillmentException(attempt.checkoutId);
+        await unitOfWork.upsertExceptionFulfillment(attempt.checkoutId);
       }
       return 'APPLIED';
     }
 
-    if (nextState === 'DECLINED' || nextState === 'ERROR') {
-      if (attempt.reservation_state === 'HELD' && !['PAID', 'CANCELLED'].includes(attempt.checkout_state)) {
-        await this.handleConfirmedFailure(client, attempt.checkout_id, attempt.reservation_id);
+    if (transaction.status === 'DECLINED' || transaction.status === 'ERROR') {
+      if (attempt.reservationState === 'HELD' && !['PAID', 'CANCELLED'].includes(attempt.checkoutState)) {
+        const retryLimitReached = await unitOfWork.countChargeAttempts(attempt.checkoutId) >= 2;
+        if (retryLimitReached) {
+          await unitOfWork.releaseReservation(attempt.reservationId);
+        } else {
+          await unitOfWork.extendRetryWindow(
+            attempt.checkoutId,
+            attempt.reservationId,
+            PAYMENT_RETRY_WINDOW_SECONDS,
+          );
+        }
+        await unitOfWork.setCheckoutPaymentFailed(attempt.checkoutId, retryLimitReached);
       }
       return 'APPLIED';
     }
 
-    if (nextState === 'VOIDED') {
-      if (attempt.reservation_state === 'HELD') {
-        await this.releaseReservation(client, attempt.reservation_id);
+    if (transaction.status === 'VOIDED') {
+      if (attempt.reservationState === 'HELD') {
+        await unitOfWork.releaseReservation(attempt.reservationId);
       }
-      if (!['PAID', 'FULFILLMENT_EXCEPTION'].includes(attempt.checkout_state)) {
-        await client.query(
-          `UPDATE checkouts SET state = 'CANCELLED', reservation_expires_at = now(), updated_at = now() WHERE id = $1`,
-          [attempt.checkout_id],
-        );
+      if (!['PAID', 'FULFILLMENT_EXCEPTION'].includes(attempt.checkoutState)) {
+        await unitOfWork.setCheckoutCancelled(attempt.checkoutId);
       }
       return 'APPLIED';
     }
 
     return 'IGNORED';
-  }
-
-  private async lockAttemptContext(
-    client: PoolClient,
-    attemptId: string,
-  ): Promise<AttemptContext | null> {
-    const owner = await client.query<{ checkout_id: string }>(
-      'SELECT checkout_id FROM payment_attempts WHERE id = $1',
-      [attemptId],
-    );
-    const checkoutId = owner.rows[0]?.checkout_id;
-    if (!checkoutId) return null;
-
-    const checkout = await client.query<{ state: string }>(
-      'SELECT state FROM checkouts WHERE id = $1 FOR UPDATE',
-      [checkoutId],
-    );
-    const checkoutState = checkout.rows[0]?.state;
-    if (!checkoutState) return null;
-
-    const reservation = await client.query<{
-      id: string;
-      state: AttemptContext['reservation_state'];
-      expires_at: Date;
-      is_expired: boolean;
-      product_id: string;
-      quantity: number;
-    }>(
-      `SELECT id, state, expires_at, expires_at <= clock_timestamp() AS is_expired,
-              product_id, quantity
-       FROM reservations
-       WHERE checkout_id = $1
-       FOR UPDATE`,
-      [checkoutId],
-    );
-    const lockedReservation = reservation.rows[0];
-    if (!lockedReservation) return null;
-
-    const attempt = await client.query<AttemptPaymentData>(
-      `
-        SELECT attempt.id, attempt.checkout_id, attempt.attempt_number,
-               attempt.state, attempt.provider_reference,
-               attempt.provider_transaction_id, attempt.amount_cop,
-               attempt.currency, attempt.provider_status,
-               attempt.provider_status_updated_at, attempt.request_fingerprint_hash,
-               attempt.provider_response_received_at
-        FROM payment_attempts AS attempt
-        WHERE attempt.id = $1 AND attempt.checkout_id = $2
-        FOR UPDATE
-      `,
-      [attemptId, checkoutId],
-    );
-    const lockedAttempt = attempt.rows[0];
-    if (!lockedAttempt) return null;
-
-    return {
-      ...lockedAttempt,
-      reservation_id: lockedReservation.id,
-      reservation_state: lockedReservation.state,
-      reservation_expires_at: lockedReservation.expires_at,
-      reservation_expired: lockedReservation.is_expired,
-      reservation_product_id: lockedReservation.product_id,
-      reservation_quantity: lockedReservation.quantity,
-      checkout_state: checkoutState,
-    };
-  }
-
-  private async extendRetryWindow(
-    client: PoolClient,
-    checkoutId: string,
-    reservationId: string,
-  ): Promise<void> {
-    const reservation = await client.query(
-      `
-        UPDATE reservations
-        SET expires_at = now() + ($2 * interval '1 second')
-        WHERE id = $1 AND state = 'HELD'
-      `,
-      [reservationId, PAYMENT_RETRY_WINDOW_SECONDS],
-    );
-    if (reservation.rowCount === 1) {
-      await client.query(
-        `UPDATE checkouts SET reservation_expires_at = now() + ($2 * interval '1 second')
-         WHERE id = $1`,
-        [checkoutId, PAYMENT_RETRY_WINDOW_SECONDS],
-      );
-    }
-  }
-
-  private async handleConfirmedFailure(
-    client: PoolClient,
-    checkoutId: string,
-    reservationId: string,
-  ): Promise<void> {
-    const dispatched = await client.query<{ attempt_count: number }>(
-      `
-        SELECT count(*)::int AS attempt_count
-        FROM payment_attempts
-        WHERE checkout_id = $1
-          AND state IN (
-            'DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME',
-            'APPROVED', 'DECLINED', 'ERROR', 'VOIDED'
-          )
-      `,
-      [checkoutId],
-    );
-    if ((dispatched.rows[0]?.attempt_count ?? 0) >= 2) {
-      await this.releaseReservation(client, reservationId);
-      await client.query(
-        `UPDATE checkouts
-         SET state = 'PAYMENT_FAILED', reservation_expires_at = now(), updated_at = now()
-         WHERE id = $1`,
-        [checkoutId],
-      );
-      return;
-    }
-
-    await this.extendRetryWindow(client, checkoutId, reservationId);
-    await client.query(
-      `UPDATE checkouts SET state = 'PAYMENT_FAILED', updated_at = now() WHERE id = $1`,
-      [checkoutId],
-    );
-  }
-
-  private async releaseReservation(client: PoolClient, reservationId: string): Promise<void> {
-    const released = await client.query<{ product_id: string; quantity: number }>(
-      `UPDATE reservations SET state = 'RELEASED', released_at = now()
-       WHERE id = $1 AND state = 'HELD' RETURNING product_id, quantity`,
-      [reservationId],
-    );
-    const reservation = released.rows[0];
-    if (!reservation) return;
-    const inventory = await client.query(
-      `UPDATE products SET reserved_quantity = reserved_quantity - $2, updated_at = now()
-       WHERE id = $1 AND reserved_quantity >= $2 RETURNING id`,
-      [reservation.product_id, reservation.quantity],
-    );
-    if (inventory.rowCount !== 1) {
-      throw new Error('Reserved inventory counters are inconsistent.');
-    }
-  }
-
-  private async setReceiptDisposition(
-    client: PoolClient,
-    receiptId: string,
-    attemptId: string | null,
-    disposition: EventDisposition,
-  ): Promise<void> {
-    await client.query(
-      `UPDATE payment_event_receipts
-       SET payment_attempt_id = $2, disposition = $3 WHERE id = $1`,
-      [receiptId, attemptId, disposition],
-    );
   }
 
   private toProviderTransaction(event: VerifiedProviderEvent): ProviderTransaction {
@@ -1099,44 +604,13 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     checkoutId: string,
     attemptId: string,
   ): Promise<PaymentAttemptView> {
-    const result = await this.database.query<AttemptRow>(
-      `
-        SELECT attempt.*
-        FROM payment_attempts AS attempt
-        JOIN checkouts AS checkout ON checkout.id = attempt.checkout_id
-        WHERE attempt.id = $1 AND attempt.checkout_id = $2
-          AND checkout.guest_session_id = $3
-      `,
-      [attemptId, checkoutId, sessionId],
-    );
-    const row = result.rows[0];
-    if (!row) throw new NotFoundException('Payment attempt not found.');
-    return this.toView(row);
-  }
-
-  private toView(row: AttemptRow): PaymentAttemptView {
-    return {
-      attemptId: row.id,
-      checkoutId: row.checkout_id,
-      attemptNumber: row.attempt_number,
-      state: row.state,
-      dispatching: (row.state === 'DISPATCHING' || row.state === 'PENDING') &&
-        row.provider_response_received_at === null,
-      amountCop: Number(row.amount_cop),
-      currency: row.currency.trim(),
-      manualReviewRequired: row.manual_review_required_at !== null,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+    const attempt = await this.persistence.findAttempt(sessionId, checkoutId, attemptId);
+    if (!attempt) throw new NotFoundException('Payment attempt not found.');
+    return attempt;
   }
 
   private async markManualReview(attemptId: string): Promise<void> {
-    await this.database.query(
-      `UPDATE payment_attempts
-       SET manual_review_required_at = COALESCE(manual_review_required_at, now()), updated_at = now()
-       WHERE id = $1 AND state IN ('DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME')`,
-      [attemptId],
-    );
+    await this.persistence.markManualReview(attemptId);
   }
 
   private async reconcileById(attemptId: string, providerTransactionId: string): Promise<void> {
@@ -1148,11 +622,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         const kind = error instanceof Error ? error.name : 'UnknownError';
         this.logger.warn(`Payment reconciliation deferred (${kind}).`);
       }
-      await this.database.query(
-        `UPDATE payment_attempts SET last_reconciled_at = now(), reconciliation_lease_until = NULL
-         WHERE id = $1 AND state IN ('DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME')`,
-        [attemptId],
-      );
+      await this.persistence.clearReconciliationAfterFailure(attemptId);
     }
   }
 
@@ -1170,54 +640,28 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
 
   private async reconcileDueAttempts(): Promise<void> {
     await this.purgeExpiredEventReceipts();
-    const candidates = await this.database.transaction(async (client) => {
-      const result = await client.query<ReconciliationCandidate>(
-        `
-          SELECT id, provider_transaction_id, state, created_at, dispatch_started_at,
-                 provider_response_received_at
-          FROM payment_attempts
-          WHERE state IN ('DISPATCHING', 'PENDING', 'UNKNOWN_OUTCOME')
-            AND (reconciliation_lease_until IS NULL OR reconciliation_lease_until <= now())
-            AND (last_reconciled_at IS NULL OR last_reconciled_at <= now() - interval '30 seconds')
-          ORDER BY COALESCE(last_reconciled_at, created_at), id
-          LIMIT ${RECONCILIATION_BATCH_SIZE}
-          FOR UPDATE SKIP LOCKED
-        `,
-      );
-      for (const candidate of result.rows) {
-        await client.query(
-          `UPDATE payment_attempts SET reconciliation_lease_until = now() + ($2 * interval '1 second')
-           WHERE id = $1`,
-          [candidate.id, RECONCILIATION_LEASE_SECONDS],
-        );
-      }
-      return result.rows;
-    });
+    const candidates = await this.persistence.claimReconciliationCandidates();
 
     const outcomes = await Promise.allSettled(candidates.map(async (candidate) => {
-      if (candidate.provider_transaction_id) {
-        await this.reconcileById(candidate.id, candidate.provider_transaction_id);
-        if (this.reviewIsDue(candidate.created_at)) {
+      if (candidate.providerTransactionId) {
+        await this.reconcileById(candidate.id, candidate.providerTransactionId);
+        if (this.reviewIsDue(candidate.createdAt)) {
           await this.markManualReview(candidate.id);
         }
         return;
       }
       if (
         (candidate.state === 'DISPATCHING' || candidate.state === 'PENDING') &&
-        candidate.provider_response_received_at === null &&
-        candidate.dispatch_started_at &&
-        Date.now() - candidate.dispatch_started_at.getTime() >= DISPATCH_STALE_SECONDS * 1000
+        candidate.providerResponseReceivedAt === null &&
+        candidate.dispatchStartedAt &&
+        Date.now() - candidate.dispatchStartedAt.getTime() >= DISPATCH_STALE_SECONDS * 1000
       ) {
         await this.markUnknown(candidate.id);
       }
-      if (this.reviewIsDue(candidate.created_at)) {
+      if (this.reviewIsDue(candidate.createdAt)) {
         await this.markManualReview(candidate.id);
       }
-      await this.database.query(
-        `UPDATE payment_attempts SET last_reconciled_at = now(), reconciliation_lease_until = NULL
-         WHERE id = $1`,
-        [candidate.id],
-      );
+      await this.persistence.clearCandidateLease(candidate.id);
     }));
     for (const outcome of outcomes) {
       if (outcome.status === 'rejected') {
@@ -1229,24 +673,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
 
   async purgeExpiredEventReceipts(): Promise<number> {
     const retentionDays = this.config.get<number>('PAYMENT_EVENT_RECEIPT_RETENTION_DAYS') ?? 365;
-    const result = await this.database.query<{ id: string }>(
-      `
-        WITH expired AS MATERIALIZED (
-          SELECT id
-          FROM payment_event_receipts
-          WHERE received_at < now() - ($1 * interval '1 day')
-          ORDER BY received_at, id
-          LIMIT 500
-          FOR UPDATE SKIP LOCKED
-        )
-        DELETE FROM payment_event_receipts AS receipt
-        USING expired
-        WHERE receipt.id = expired.id
-        RETURNING receipt.id
-      `,
-      [retentionDays],
-    );
-    return result.rowCount ?? 0;
+    return this.persistence.purgeExpiredEventReceipts(retentionDays);
   }
 
   private shouldReconcile(lastReconciledAt: Date | null): boolean {
